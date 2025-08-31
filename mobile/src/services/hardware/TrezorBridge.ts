@@ -22,6 +22,14 @@ type ConnectOptions = {
 export class TrezorBridge {
   private log: ProgressCallback;
   private isHid = false;
+  private static MSG = {
+    FEATURES: 17,
+    FAILURE: 3,
+    BUTTON_REQUEST: 26,
+    BUTTON_ACK: 27,
+    PASSPHRASE_REQUEST: 41,
+    PASSPHRASE_ACK: 42,
+  } as const;
 
   constructor(logger?: ProgressCallback) {
     this.log = logger ?? (() => {});
@@ -88,13 +96,35 @@ export class TrezorBridge {
         const payload = encodeSolanaGetPublicKey(addressN, false);
         const msgType = getMsgTypeId('MessageType_SolanaGetPublicKey');
         this.log(`Send SolanaGetPublicKey type=${msgType} bytes=${payload.length}`);
-        const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 8000);
-        this.log(`Recv type=${respType} bytes=${respPayload.length}`);
-        const { public_key } = decodeSolanaPublicKey(respPayload);
-        const keyBytes = public_key ?? new Uint8Array();
-        this.log(`Decoded pubkey bytes=${keyBytes.length}`);
-        if (keyBytes.length === 0) throw new Error('Empty public key payload');
-        const keyB58 = toBase58(keyBytes);
+        let keyB58: string | null = null;
+        let guard = 0;
+        while (guard++ < 5 && !keyB58) {
+          const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 8000);
+          this.log(`Recv type=${respType} bytes=${respPayload.length}`);
+          if (respType === TrezorBridge.MSG.PASSPHRASE_REQUEST || (respType === 0 && respPayload.length === 0)) {
+            this.log('Passphrase requested; acknowledging on-device entry');
+            const ack = encodePassphraseAckOnDevice();
+            await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, ack, 8000);
+            continue;
+          }
+          if (respType === TrezorBridge.MSG.BUTTON_REQUEST) {
+            this.log('Button requested; sending ButtonAck');
+            await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.BUTTON_ACK, new Uint8Array(), 8000);
+            continue;
+          }
+          if (respType === TrezorBridge.MSG.FAILURE) {
+            throw new Error('Device returned Failure to SolanaGetPublicKey');
+          }
+          const { public_key } = decodeSolanaPublicKey(respPayload);
+          const keyBytes = public_key ?? new Uint8Array();
+          this.log(`Decoded pubkey bytes=${keyBytes.length}`);
+          if (keyBytes.length === 0) {
+            // Loop again if device needs another round (e.g., after ack)
+            continue;
+          }
+          keyB58 = toBase58(keyBytes);
+        }
+        if (!keyB58) throw new Error('Empty public key payload');
         this.log('Public key received');
         await TrezorUSB.close();
         return keyB58;
@@ -179,6 +209,14 @@ function toBase58(bytes: Uint8Array): string {
   const bs58 = require('bs58');
   // bs58 accepts Uint8Array directly; avoid Buffer in RN
   return bs58.encode(bytes);
+}
+
+function encodePassphraseAckOnDevice(): Uint8Array {
+  // PassphraseAck: field 2 (on_device) = true (varint)
+  const out: number[] = [];
+  const tag = (2 << 3) | 0; // field 2, varint
+  out.push(tag, 1);
+  return Uint8Array.from(out);
 }
 
 // hex helpers removed; no longer needed with protobuf decode
