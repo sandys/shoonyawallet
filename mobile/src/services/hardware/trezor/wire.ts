@@ -2,6 +2,12 @@
 // NOTE: This is a placeholder; finalize framing fields before production.
 
 export const REPORT_SIZE = 64;
+type HIDReportMode = 'standard' | 'leadingZero';
+let hidReportMode: HIDReportMode = 'standard';
+
+export function setHIDReportMode(mode: HIDReportMode) {
+  hidReportMode = mode;
+}
 const HDR_FIRST = new Uint8Array([0x3f, 0x23, 0x23]); // '?##' first-frame
 const HDR_NEXT = new Uint8Array([0x3f, 0x2b, 0x2b]);  // '?++' continuation
 
@@ -55,7 +61,7 @@ export function encodeFrame(msgType: number, payload: Uint8Array): Uint8Array[] 
   const firstFrame = new Uint8Array(firstHeader.length + firstChunk.length);
   firstFrame.set(firstHeader, 0);
   firstFrame.set(firstChunk, firstHeader.length);
-  // Pad to REPORT_SIZE
+  // Pad to report size (64 or 65 depending on mode)
   out.push(padToReport(firstFrame));
 
   let offset = firstChunk.length;
@@ -78,6 +84,10 @@ export function encodeFrame(msgType: number, payload: Uint8Array): Uint8Array[] 
 }
 
 function tryParseHeader(buf: Uint8Array): Header | null {
+  // Some stacks include a leading 0x00 report-id byte. Skip it if present.
+  if (buf.length >= 1 && buf[0] === 0x00) {
+    buf = buf.subarray(1);
+  }
   // First frame: '?##' + type BE16 + len BE32
   if (buf.length >= 9 && buf[0] === HDR_FIRST[0] && buf[1] === HDR_FIRST[1] && buf[2] === HDR_FIRST[2]) {
     const type = (buf[3] << 8) | buf[4];
@@ -136,8 +146,17 @@ export async function sendAndReceive(
 }
 
 function padToReport(frame: Uint8Array): Uint8Array {
-  if (frame.length === REPORT_SIZE) return frame;
-  const out = new Uint8Array(REPORT_SIZE);
-  out.set(frame, 0);
+  const target = hidReportMode === 'leadingZero' ? REPORT_SIZE + 1 : REPORT_SIZE;
+  // Prepend 0x00 for leadingZero mode
+  let core = frame;
+  if (hidReportMode === 'leadingZero') {
+    const prefixed = new Uint8Array(1 + frame.length);
+    prefixed[0] = 0x00;
+    prefixed.set(frame, 1);
+    core = prefixed;
+  }
+  if (core.length === target) return core;
+  const out = new Uint8Array(target);
+  out.set(core, 0);
   return out;
 }

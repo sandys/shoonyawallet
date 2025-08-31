@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import { SOL_DERIVATION_PATH } from './paths';
 import { classifyTrezorError } from './errors';
 import { TrezorUSB } from '../../native/TrezorUSB';
-import { encodeFrame, decodeFrames, sendAndReceive } from './trezor/wire';
+import { encodeFrame, decodeFrames, sendAndReceive, setHIDReportMode } from './trezor/wire';
 import { bip32Path, encodeSolanaGetPublicKey, decodeSolanaPublicKey, getMsgTypeId, encodeByName, decodeByName } from './trezor/proto';
 
 export type ProgressCallback = (message: string) => void;
@@ -43,14 +43,16 @@ export class TrezorBridge {
         await TrezorUSB.ensurePermission(dev);
         this.log('Opening USB session');
         await TrezorUSB.open(dev);
+        // Allow device time to settle before first handshake
+        await this.simulateDelay(200);
         this.log('Handshake (Initialize → Features)');
-        await this.handshake();
+        await this.handshake(8000);
         this.log('Exchanging messages (public key request)');
         const addressN = bip32Path(SOL_DERIVATION_PATH);
         const payload = encodeSolanaGetPublicKey(addressN, false);
         const msgType = getMsgTypeId('MessageType_SolanaGetPublicKey');
         this.log(`Send SolanaGetPublicKey type=${msgType} bytes=${payload.length}`);
-        const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 3000);
+        const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 8000);
         this.log(`Recv type=${respType} bytes=${respPayload.length}`);
         const { public_key } = decodeSolanaPublicKey(respPayload);
         this.log(`Decoded pubkey bytes=${public_key.length}`);
@@ -80,12 +82,21 @@ export class TrezorBridge {
     return new Promise((res) => setTimeout(res, ms));
   }
 
-  private async handshake() {
+  private async handshake(timeoutMs = 3000) {
     const initType = getMsgTypeId('MessageType_Initialize');
     const featuresType = getMsgTypeId('MessageType_Features');
     const payload = encodeByName('Initialize', {});
     this.log(`Handshake: send Initialize type=${initType} bytes=${payload.length}`);
-    const { msgType, payload: resp } = await sendAndReceive(TrezorUSB.exchange, initType, payload, 3000);
+    let msgType: number, resp: Uint8Array;
+    try {
+      const res = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
+      msgType = res.msgType; resp = res.payload;
+    } catch (e) {
+      this.log('Handshake failed on first attempt; retrying with leadingZero HID report mode');
+      setHIDReportMode('leadingZero');
+      const res2 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
+      msgType = res2.msgType; resp = res2.payload;
+    }
     this.log(`Handshake: recv type=${msgType} bytes=${resp.length}`);
     if (msgType !== featuresType) {
       // Some devices answer with Success or different wrapper; try decode to detect

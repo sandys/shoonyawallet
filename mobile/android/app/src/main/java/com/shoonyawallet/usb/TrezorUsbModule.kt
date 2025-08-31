@@ -13,6 +13,8 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
 import com.facebook.react.bridge.*
+import android.util.Log
+import android.os.SystemClock
 
 class TrezorUsbModule(private val reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     private val ACTION_USB_PERMISSION = "com.shoonyawallet.USB_PERMISSION"
@@ -80,11 +82,14 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
         var epOut: UsbEndpoint? = null
         for (i in 0 until dev.interfaceCount) {
             val itf = dev.getInterface(i)
+            Log.d("TrezorUsb", "iface #$i class=${itf.interfaceClass} subclass=${itf.interfaceSubclass} proto=${itf.interfaceProtocol} epCount=${itf.endpointCount}")
             var tmpIn: UsbEndpoint? = null
             var tmpOut: UsbEndpoint? = null
             for (e in 0 until itf.endpointCount) {
                 val ep = itf.getEndpoint(e)
-                if (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT || ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
+                Log.d("TrezorUsb", "  ep #$e type=${ep.type} dir=${ep.direction} mps=${ep.maxPacketSize}")
+                // Prefer INTERRUPT endpoints for HID; fall back to BULK if needed
+                if (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT) {
                     if (ep.direction == UsbConstants.USB_DIR_IN) tmpIn = ep
                     if (ep.direction == UsbConstants.USB_DIR_OUT) tmpOut = ep
                 }
@@ -93,11 +98,28 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
                 targetIface = itf; epIn = tmpIn; epOut = tmpOut; break
             }
         }
-        if (targetIface == null || epIn == null || epOut == null) { promise.reject("NO_ENDPOINTS", "No HID endpoints found"); return }
+        // If not found via INT, try BULK as a fallback
+        if (targetIface == null) {
+            for (i in 0 until dev.interfaceCount) {
+                val itf = dev.getInterface(i)
+                var tmpIn: UsbEndpoint? = null
+                var tmpOut: UsbEndpoint? = null
+                for (e in 0 until itf.endpointCount) {
+                    val ep = itf.getEndpoint(e)
+                    if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
+                        if (ep.direction == UsbConstants.USB_DIR_IN) tmpIn = ep
+                        if (ep.direction == UsbConstants.USB_DIR_OUT) tmpOut = ep
+                    }
+                }
+                if (tmpIn != null && tmpOut != null) { targetIface = itf; epIn = tmpIn; epOut = tmpOut; break }
+            }
+        }
+        if (targetIface == null || epIn == null || epOut == null) { promise.reject("NO_ENDPOINTS", "No suitable endpoints found"); return }
 
         val conn = usbManager.openDevice(dev) ?: run { promise.reject("OPEN_FAILED", "Failed to open device"); return }
         if (!conn.claimInterface(targetIface, true)) { promise.reject("CLAIM_FAILED", "Failed to claim interface"); return }
         connection = conn; iface = targetIface; inEndpoint = epIn; outEndpoint = epOut
+        Log.d("TrezorUsb", "Opened device vid=${dev.vendorId} pid=${dev.productId} iface=${targetIface.id} inMps=${epIn.maxPacketSize} outMps=${epOut.maxPacketSize}")
         promise.resolve(true)
     }
 
@@ -123,15 +145,28 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
         if (size > 0) {
             val data = ByteArray(size) { i -> write.getInt(i).toByte() }
             val w = conn.bulkTransfer(out, data, data.size, timeoutMs)
+            Log.d("TrezorUsb", "Wrote ${data.size} bytes, result=$w")
             if (w <= 0) { promise.reject("WRITE_FAIL", "bulkTransfer write failed: $w"); return }
         }
 
-        // Read single packet (caller can loop/chunk at JS level as needed)
-        val buf = ByteArray(64)
-        val r = conn.bulkTransfer(inp, buf, buf.size, timeoutMs)
-        if (r < 0) { promise.reject("READ_FAIL", "bulkTransfer read failed: $r"); return }
+        // Read loop: attempt multiple reads until bytes arrive or timeout elapses
+        val start = SystemClock.elapsedRealtime()
         val outArr = Arguments.createArray()
-        for (i in 0 until r) outArr.pushInt(buf[i].toInt() and 0xFF)
+        val buf = ByteArray(65) // accommodate potential leading report-id byte
+        var total = 0
+        while (true) {
+            val elapsed = (SystemClock.elapsedRealtime() - start).toInt()
+            val remain = timeoutMs - elapsed
+            if (remain <= 0) break
+            val r = conn.bulkTransfer(inp, buf, buf.size, remain)
+            if (r > 0) {
+                Log.d("TrezorUsb", "Read $r bytes")
+                for (i in 0 until r) outArr.pushInt(buf[i].toInt() and 0xFF)
+                total += r
+                break
+            }
+        }
+        if (total == 0) { promise.reject("READ_FAIL", "bulkTransfer read failed: -1"); return }
         promise.resolve(outArr)
     }
 
