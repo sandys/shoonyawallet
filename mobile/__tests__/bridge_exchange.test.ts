@@ -1,9 +1,4 @@
 import { TrezorBridge } from '../src/services/hardware/TrezorBridge';
-// Ensure Platform is Android for this test environment
-jest.mock('react-native', () => ({
-  ...jest.requireActual('react-native'),
-  Platform: { ...jest.requireActual('react-native').Platform, OS: 'android' },
-}));
 // (no direct imports of wire/proto to satisfy jest.mock scoping)
 
 // Mock native USB module

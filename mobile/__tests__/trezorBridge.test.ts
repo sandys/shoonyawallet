@@ -1,8 +1,3 @@
-jest.mock('react-native', () => ({
-  ...jest.requireActual('react-native'),
-  Platform: { ...jest.requireActual('react-native').Platform, OS: 'android' },
-}));
-
 // Mock native USB similar to bridge_exchange
 jest.mock('../src/native/TrezorUSB', () => {
   let readQueue: number[][] = [];
