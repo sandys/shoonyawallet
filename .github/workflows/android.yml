@@ -23,7 +23,8 @@ jobs:
             ${{ runner.os }}-npm-
       - name: Install NPM dependencies
         working-directory: ./mobile
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - name: Run tests (Jest)
         working-directory: ./mobile
         run: npm test -- --ci --reporters=default --watchAll=false
@@ -68,7 +69,8 @@ jobs:
             ${{ runner.os }}-npm-
       - name: Install NPM dependencies
         working-directory: ./mobile
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - name: Vendor Trezor protos and generate descriptor
         working-directory: ./mobile
         run: |
