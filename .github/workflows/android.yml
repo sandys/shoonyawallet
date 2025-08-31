@@ -35,6 +35,17 @@ jobs:
           else \
             npm install; \
           fi
+      - name: Generate Trezor descriptor.json for tests
+        working-directory: ./mobile
+        run: |
+          set -euo pipefail
+          PROTO_DIR=src/services/hardware/trezor/protos
+          npx pbjs -t json -o "$PROTO_DIR/descriptor.json" \
+            "$PROTO_DIR/options.proto" \
+            "$PROTO_DIR/messages-common.proto" \
+            "$PROTO_DIR/messages-management.proto" \
+            "$PROTO_DIR/messages.proto" \
+            "$PROTO_DIR/messages-solana.proto"
       - name: Run tests (Jest)
         working-directory: ./mobile
         run: npm test -- --ci --reporters=default --watchAll=false

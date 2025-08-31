@@ -3,7 +3,7 @@
 
 import type { TrezorUSB } from '../../../native/TrezorUSB';
 import { setTransportMode, setHIDReportMode, encodeFrame, encodeFromEncoded, decodeFrames, concat } from './wire';
-import { Messages, parseConfigure, encodeMessage as pbEncodeMessage, decodeMessage as pbDecodeMessage } from '@trezor/protobuf';
+import { Messages, parseConfigure, encodeMessage as pbEncodeMessage, decodeMessage as pbDecodeMessage, loadDefinitions } from '@trezor/protobuf';
 const MESSAGES = parseConfigure(Messages);
 
 type TransportPkg = any;
@@ -29,6 +29,19 @@ export function configureFraming(fromInterfaceClass?: number) {
     if (fromInterfaceClass === 0x03) setTransportMode('hid');
     else setTransportMode('vendor');
   }
+}
+
+// Attempt to augment messages with vendored Solana definitions if available
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const descriptor = require('./protos/descriptor.json');
+  const solanaPkg = descriptor?.nested?.hw?.nested?.trezor?.nested?.messages?.nested?.solana;
+  if (solanaPkg) {
+    // load under package name 'hw.trezor.messages.solana'
+    loadDefinitions(MESSAGES, 'hw.trezor.messages.solana', async () => solanaPkg);
+  }
+} catch (_) {
+  // ignore; definitions may not be generated at test-time
 }
 
 export function encodeMessage(msgType: number, payload: Uint8Array): Uint8Array[] {
