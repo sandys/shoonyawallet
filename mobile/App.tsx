@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { SafeAreaView, View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, ScrollView } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { TrezorBridge } from './src/services/hardware/TrezorBridge';
+import { TrezorUSB } from './src/native/TrezorUSB';
 import { SolanaRPCService } from './src/services/rpc/SolanaRPCService';
 import { classifyTrezorError } from './src/services/hardware/errors';
 
@@ -106,6 +107,17 @@ export default function App() {
             }
           }} />
           <Button title="Clear Logs" onPress={() => setLogs([])} />
+          {Platform.OS === 'android' && (
+            <Button title="Pull Native Logs" onPress={async () => {
+              try {
+                const native = await TrezorUSB.getDebugLog();
+                setLogs((l) => [...l, ...native]);
+              } catch (e) {
+                const ts = new Date().toISOString().slice(11, 23);
+                setLogs((l) => [...l, `${ts} Failed to pull native logs: ${String(e)}`]);
+              }
+            }} />
+          )}
         </View>
       </View>
       <Modal visible={showPermissionHelp} animationType="slide" transparent>

@@ -9,6 +9,8 @@ const Native = NativeModules.TrezorUsb as
       open(vendorId: number, productId: number): Promise<boolean>;
       exchange(bytes: number[], timeoutMs: number): Promise<number[]>;
       close(): Promise<boolean>;
+      getDebugLog(): Promise<string[]>;
+      clearDebugLog(): Promise<boolean>;
     }
   | undefined;
 
@@ -37,5 +39,12 @@ export const TrezorUSB = {
     if (!Native) return;
     await Native.close();
   },
+  async getDebugLog(): Promise<string[]> {
+    if (!Native) return [];
+    return Native.getDebugLog();
+  },
+  async clearDebugLog(): Promise<void> {
+    if (!Native) return;
+    await Native.clearDebugLog();
+  },
 };
-

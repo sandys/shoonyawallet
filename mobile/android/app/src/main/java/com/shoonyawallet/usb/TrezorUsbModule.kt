@@ -22,6 +22,15 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
     private var iface: UsbInterface? = null
     private var inEndpoint: UsbEndpoint? = null
     private var outEndpoint: UsbEndpoint? = null
+    private val logBuf: ArrayDeque<String> = ArrayDeque()
+
+    private fun addLog(message: String) {
+        val ts = System.currentTimeMillis()
+        val line = "[$ts] $message"
+        Log.d("TrezorUsb", message)
+        logBuf.addLast(line)
+        while (logBuf.size > 300) logBuf.removeFirst()
+    }
 
     override fun getName() = "TrezorUsb"
 
@@ -38,6 +47,7 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
                 result.pushMap(m)
             }
         }
+        addLog("listDevices found ${result.size()} candidate(s)")
         promise.resolve(result)
     }
 
@@ -50,6 +60,7 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
             return
         }
         if (usbManager.hasPermission(dev)) {
+            addLog("USB permission already granted for vid=$vendorId pid=$productId")
             promise.resolve(true)
             return
         }
@@ -61,11 +72,13 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
                 if (intent?.action == ACTION_USB_PERMISSION) {
                     reactContext.unregisterReceiver(this)
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    addLog("USB permission result: granted=$granted")
                     if (granted) promise.resolve(true) else promise.reject("DENIED", "Permission denied")
                 }
             }
         }
         reactContext.registerReceiver(receiver, filter)
+        addLog("Requesting USB permission for vid=$vendorId pid=$productId")
         usbManager.requestPermission(dev, permissionIntent)
     }
 
@@ -82,12 +95,12 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
         var epOut: UsbEndpoint? = null
         for (i in 0 until dev.interfaceCount) {
             val itf = dev.getInterface(i)
-            Log.d("TrezorUsb", "iface #$i class=${itf.interfaceClass} subclass=${itf.interfaceSubclass} proto=${itf.interfaceProtocol} epCount=${itf.endpointCount}")
+            addLog("iface #$i class=${itf.interfaceClass} subclass=${itf.interfaceSubclass} proto=${itf.interfaceProtocol} eps=${itf.endpointCount}")
             var tmpIn: UsbEndpoint? = null
             var tmpOut: UsbEndpoint? = null
             for (e in 0 until itf.endpointCount) {
                 val ep = itf.getEndpoint(e)
-                Log.d("TrezorUsb", "  ep #$e type=${ep.type} dir=${ep.direction} mps=${ep.maxPacketSize}")
+                addLog("  ep #$e type=${ep.type} dir=${ep.direction} mps=${ep.maxPacketSize}")
                 // Prefer INTERRUPT endpoints for HID; fall back to BULK if needed
                 if (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT) {
                     if (ep.direction == UsbConstants.USB_DIR_IN) tmpIn = ep
@@ -119,7 +132,7 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
         val conn = usbManager.openDevice(dev) ?: run { promise.reject("OPEN_FAILED", "Failed to open device"); return }
         if (!conn.claimInterface(targetIface, true)) { promise.reject("CLAIM_FAILED", "Failed to claim interface"); return }
         connection = conn; iface = targetIface; inEndpoint = epIn; outEndpoint = epOut
-        Log.d("TrezorUsb", "Opened device vid=${dev.vendorId} pid=${dev.productId} iface=${targetIface.id} inMps=${epIn.maxPacketSize} outMps=${epOut.maxPacketSize}")
+        addLog("Opened device vid=${dev.vendorId} pid=${dev.productId} iface=${targetIface.id} inMps=${epIn.maxPacketSize} outMps=${epOut.maxPacketSize}")
         promise.resolve(true)
     }
 
@@ -144,8 +157,10 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
         val size = write.size()
         if (size > 0) {
             val data = ByteArray(size) { i -> write.getInt(i).toByte() }
+            val preview = data.take(16).joinToString(" ") { b -> String.format("%02X", (b.toInt() and 0xFF)) }
+            addLog("TX[${data.size}]: $preview …")
             val w = conn.bulkTransfer(out, data, data.size, timeoutMs)
-            Log.d("TrezorUsb", "Wrote ${data.size} bytes, result=$w")
+            addLog("Wrote ${data.size} bytes, result=$w")
             if (w <= 0) { promise.reject("WRITE_FAIL", "bulkTransfer write failed: $w"); return }
         }
 
@@ -160,7 +175,8 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
             if (remain <= 0) break
             val r = conn.bulkTransfer(inp, buf, buf.size, remain)
             if (r > 0) {
-                Log.d("TrezorUsb", "Read $r bytes")
+                val preview = buf.take(minOf(r, 16)).joinToString(" ") { b -> String.format("%02X", (b.toInt() and 0xFF)) }
+                addLog("RX[$r]: $preview …")
                 for (i in 0 until r) outArr.pushInt(buf[i].toInt() and 0xFF)
                 total += r
                 break
@@ -168,6 +184,19 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
         }
         if (total == 0) { promise.reject("READ_FAIL", "bulkTransfer read failed: -1"); return }
         promise.resolve(outArr)
+    }
+
+    @ReactMethod
+    fun getDebugLog(promise: Promise) {
+        val arr = Arguments.createArray()
+        logBuf.forEach { arr.pushString(it) }
+        promise.resolve(arr)
+    }
+
+    @ReactMethod
+    fun clearDebugLog(promise: Promise) {
+        logBuf.clear()
+        promise.resolve(true)
     }
 
     private fun isTrezor(dev: UsbDevice): Boolean {
