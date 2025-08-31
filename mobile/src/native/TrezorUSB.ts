@@ -11,6 +11,15 @@ const Native = NativeModules.TrezorUsb as
       close(): Promise<boolean>;
       getDebugLog(): Promise<string[]>;
       clearDebugLog(): Promise<boolean>;
+      getInterfaceInfo(): Promise<{
+        interfaceClass?: number;
+        interfaceSubclass?: number;
+        interfaceProtocol?: number;
+        inEndpointAddress?: number;
+        outEndpointAddress?: number;
+        inMaxPacketSize?: number;
+        outMaxPacketSize?: number;
+      }>;
     }
   | undefined;
 
@@ -46,5 +55,17 @@ export const TrezorUSB = {
   async clearDebugLog(): Promise<void> {
     if (!Native) return;
     await Native.clearDebugLog();
+  },
+  async getInterfaceInfo(): Promise<{
+    interfaceClass?: number;
+    interfaceSubclass?: number;
+    interfaceProtocol?: number;
+    inEndpointAddress?: number;
+    outEndpointAddress?: number;
+    inMaxPacketSize?: number;
+    outMaxPacketSize?: number;
+  }> {
+    if (!Native) return {} as any;
+    return Native.getInterfaceInfo();
   },
 };

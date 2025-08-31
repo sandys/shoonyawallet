@@ -3,10 +3,16 @@
 
 export const REPORT_SIZE = 64;
 type HIDReportMode = 'standard' | 'leadingZero';
+type TransportMode = 'hid' | 'vendor';
 let hidReportMode: HIDReportMode = 'standard';
+let transportMode: TransportMode = 'hid';
 
 export function setHIDReportMode(mode: HIDReportMode) {
   hidReportMode = mode;
+}
+
+export function setTransportMode(mode: TransportMode) {
+  transportMode = mode;
 }
 const HDR_FIRST = new Uint8Array([0x3f, 0x23, 0x23]); // '?##' first-frame
 const HDR_NEXT = new Uint8Array([0x3f, 0x2b, 0x2b]);  // '?++' continuation
@@ -46,8 +52,11 @@ export function concat(parts: Uint8Array[]): Uint8Array {
 export function encodeFrame(msgType: number, payload: Uint8Array): Uint8Array[] {
   // Official-style Trezor HID framing (first + continuation frames)
   const len = payload.length >>> 0;
-  const firstHeader = new Uint8Array(3 + 2 + 4); // '?##' + type BE16 + len BE32
-  firstHeader.set(HDR_FIRST, 0);
+  // Header: 0x3f '?' magic + '##' + type BE16 + len BE32 (protocol v1)
+  const firstHeader = new Uint8Array(3 + 2 + 4);
+  firstHeader[0] = 0x3f; // MESSAGE_MAGIC_HEADER_BYTE
+  firstHeader[1] = 0x23; // '#'
+  firstHeader[2] = 0x23; // '#'
   firstHeader[3] = (msgType >>> 8) & 0xff;
   firstHeader[4] = msgType & 0xff;
   firstHeader[5] = (len >>> 24) & 0xff;
@@ -67,8 +76,11 @@ export function encodeFrame(msgType: number, payload: Uint8Array): Uint8Array[] 
   let offset = firstChunk.length;
   let seq = 0;
   while (offset < payload.length) {
-    const contHeader = new Uint8Array(3 + 2); // '?++' + seq BE16
-    contHeader.set(HDR_NEXT, 0);
+    // Continuation header: 0x3f '?', '++' and seq BE16
+    const contHeader = new Uint8Array(3 + 2);
+    contHeader[0] = 0x3f;
+    contHeader[1] = 0x2b; // '+'
+    contHeader[2] = 0x2b; // '+'
     contHeader[3] = (seq >>> 8) & 0xff;
     contHeader[4] = seq & 0xff;
     seq++;
@@ -83,22 +95,43 @@ export function encodeFrame(msgType: number, payload: Uint8Array): Uint8Array[] 
   return out;
 }
 
+export function encodeFromEncoded(encoded: Uint8Array): Uint8Array[] {
+  const frames: Uint8Array[] = [];
+  const headerLen = 9; // v1 header size
+  const leading = hidReportMode === 'leadingZero' ? 1 : 0;
+  const firstAvail = REPORT_SIZE - leading - headerLen;
+  const payloadPart = encoded.subarray(headerLen, Math.min(encoded.length, headerLen + Math.max(0, firstAvail)));
+  const firstFrame = new Uint8Array(headerLen + payloadPart.length);
+  firstFrame.set(encoded.subarray(0, headerLen), 0);
+  firstFrame.set(payloadPart, headerLen);
+  frames.push(padToReport(firstFrame));
+
+  let offset = headerLen + payloadPart.length;
+  let seq = 0;
+  while (offset < encoded.length) {
+    const contHeader = new Uint8Array(3 + 2);
+    contHeader[0] = 0x3f; contHeader[1] = 0x2b; contHeader[2] = 0x2b;
+    contHeader[3] = (seq >>> 8) & 0xff; contHeader[4] = seq & 0xff; seq++;
+    const avail = REPORT_SIZE - leading - contHeader.length;
+    const chunkData = encoded.subarray(offset, Math.min(encoded.length, offset + Math.max(0, avail)));
+    const frame = new Uint8Array(contHeader.length + chunkData.length);
+    frame.set(contHeader, 0); frame.set(chunkData, contHeader.length);
+    frames.push(padToReport(frame));
+    offset += chunkData.length;
+  }
+  return frames;
+}
+
 function tryParseHeader(buf: Uint8Array): Header | null {
   // Some stacks include a leading 0x00 report-id byte. Skip it if present.
   if (buf.length >= 1 && buf[0] === 0x00) {
     buf = buf.subarray(1);
   }
   // First frame: '?##' + type BE16 + len BE32
-  if (buf.length >= 9 && buf[0] === HDR_FIRST[0] && buf[1] === HDR_FIRST[1] && buf[2] === HDR_FIRST[2]) {
+  if (buf.length >= 9 && buf[0] === 0x3f && buf[1] === 0x23 && buf[2] === 0x23) {
     const type = (buf[3] << 8) | buf[4];
     const len = (buf[5] << 24) | (buf[6] << 16) | (buf[7] << 8) | buf[8];
     return { msgType: type >>> 0, payloadLen: len >>> 0, headerLen: 9, format: 'B' };
-  }
-  // Legacy candidate: 0x3f 0x23 + type LE16 + len LE32
-  if (buf.length >= 8 && buf[0] === 0x3f && buf[1] === 0x23) {
-    const type = buf[2] | (buf[3] << 8);
-    const len = buf[4] | (buf[5] << 8) | (buf[6] << 16) | (buf[7] << 24);
-    return { msgType: type >>> 0, payloadLen: len >>> 0, headerLen: 8, format: 'A' };
   }
   return null;
 }
@@ -145,9 +178,9 @@ export async function sendAndReceive(
   return { msgType: header.msgType, payload: payloadBuf };
 }
 
-function padToReport(frame: Uint8Array): Uint8Array {
+export function padToReport(frame: Uint8Array): Uint8Array {
+  // HID mode: optionally add leading 0x00 and pad to 65
   const target = hidReportMode === 'leadingZero' ? REPORT_SIZE + 1 : REPORT_SIZE;
-  // Prepend 0x00 for leadingZero mode
   let core = frame;
   if (hidReportMode === 'leadingZero') {
     const prefixed = new Uint8Array(1 + frame.length);

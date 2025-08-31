@@ -18,7 +18,10 @@
     "@react-native-clipboard/clipboard": "^1.11.1",
     "@solana/web3.js": "^1.95.0",
     "bs58": "^5.0.0",
-    "protobufjs": "^7.2.6"
+    "protobufjs": "^7.2.6",
+    "@trezor/transport": "^2.0.0",
+    "@trezor/protocol": "^1.2.8",
+    "@trezor/protobuf": "^1.4.2"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

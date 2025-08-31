@@ -21,6 +21,21 @@ export default function App() {
   }), []);
   const rpc = useMemo(() => new SolanaRPCService(), []);
 
+  const pullNativeLogs = async () => {
+    try {
+      const native = await TrezorUSB.getDebugLog();
+      const count = Array.isArray(native) ? native.length : 0;
+      if (count > 0) {
+        setLogs((l) => [...l, ...native, `${new Date().toISOString().slice(11, 23)} Pulled ${count} native log lines`]);
+      } else {
+        setLogs((l) => [...l, `${new Date().toISOString().slice(11, 23)} No native logs available`]);
+      }
+    } catch (e) {
+      const ts = new Date().toISOString().slice(11, 23);
+      setLogs((l) => [...l, `${ts} Failed to pull native logs: ${String(e)}`]);
+    }
+  };
+
   const start = async (opts?: { slow?: boolean }) => {
     setLogs([]);
     setError(null);
@@ -44,6 +59,8 @@ export default function App() {
       if (cls.code === 'PERMISSION_DENIED' || cls.code === 'DEVICE_NOT_FOUND') {
         setShowPermissionHelp(true);
       }
+      // Pull native logs to aid debugging
+      await pullNativeLogs();
       setPhase('error');
     }
   };
@@ -108,15 +125,19 @@ export default function App() {
           }} />
           <Button title="Clear Logs" onPress={() => setLogs([])} />
           {Platform.OS === 'android' && (
-            <Button title="Pull Native Logs" onPress={async () => {
-              try {
-                const native = await TrezorUSB.getDebugLog();
-                setLogs((l) => [...l, ...native]);
-              } catch (e) {
-                const ts = new Date().toISOString().slice(11, 23);
-                setLogs((l) => [...l, `${ts} Failed to pull native logs: ${String(e)}`]);
-              }
-            }} />
+            <>
+              <Button title="Pull Native Logs" onPress={pullNativeLogs} />
+              <Button title="Clear Native Logs" onPress={async () => {
+                try {
+                  await TrezorUSB.clearDebugLog();
+                  const ts = new Date().toISOString().slice(11, 23);
+                  setLogs((l) => [...l, `${ts} Cleared native log buffer`]);
+                } catch (e) {
+                  const ts = new Date().toISOString().slice(11, 23);
+                  setLogs((l) => [...l, `${ts} Failed to clear native logs: ${String(e)}`]);
+                }
+              }} />
+            </>
           )}
         </View>
       </View>

@@ -22,6 +22,7 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
     private var iface: UsbInterface? = null
     private var inEndpoint: UsbEndpoint? = null
     private var outEndpoint: UsbEndpoint? = null
+    private var lastOpenInfo: WritableMap? = null
     private val logBuf: ArrayDeque<String> = ArrayDeque()
 
     private fun addLog(message: String) {
@@ -100,7 +101,7 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
             var tmpOut: UsbEndpoint? = null
             for (e in 0 until itf.endpointCount) {
                 val ep = itf.getEndpoint(e)
-                addLog("  ep #$e type=${ep.type} dir=${ep.direction} mps=${ep.maxPacketSize}")
+                addLog("  ep #$e addr=${ep.address} type=${ep.type} dir=${ep.direction} mps=${ep.maxPacketSize}")
                 // Prefer INTERRUPT endpoints for HID; fall back to BULK if needed
                 if (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT) {
                     if (ep.direction == UsbConstants.USB_DIR_IN) tmpIn = ep
@@ -133,6 +134,16 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
         if (!conn.claimInterface(targetIface, true)) { promise.reject("CLAIM_FAILED", "Failed to claim interface"); return }
         connection = conn; iface = targetIface; inEndpoint = epIn; outEndpoint = epOut
         addLog("Opened device vid=${dev.vendorId} pid=${dev.productId} iface=${targetIface.id} inMps=${epIn.maxPacketSize} outMps=${epOut.maxPacketSize}")
+        // Capture interface info for JS consumers
+        val info = Arguments.createMap()
+        info.putInt("interfaceClass", targetIface.interfaceClass)
+        info.putInt("interfaceSubclass", targetIface.interfaceSubclass)
+        info.putInt("interfaceProtocol", targetIface.interfaceProtocol)
+        info.putInt("inEndpointAddress", epIn.address)
+        info.putInt("outEndpointAddress", epOut.address)
+        info.putInt("inMaxPacketSize", epIn.maxPacketSize)
+        info.putInt("outMaxPacketSize", epOut.maxPacketSize)
+        lastOpenInfo = info
         promise.resolve(true)
     }
 
@@ -142,6 +153,7 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
             connection?.releaseInterface(iface)
             connection?.close()
             connection = null; iface = null; inEndpoint = null; outEndpoint = null
+            lastOpenInfo = null
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("CLOSE_FAILED", e)
@@ -167,7 +179,8 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
         // Read loop: attempt multiple reads until bytes arrive or timeout elapses
         val start = SystemClock.elapsedRealtime()
         val outArr = Arguments.createArray()
-        val buf = ByteArray(65) // accommodate potential leading report-id byte
+        val readSize = inp.maxPacketSize.coerceAtLeast(64)
+        val buf = ByteArray(readSize)
         var total = 0
         while (true) {
             val elapsed = (SystemClock.elapsedRealtime() - start).toInt()
@@ -197,6 +210,11 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
     fun clearDebugLog(promise: Promise) {
         logBuf.clear()
         promise.resolve(true)
+    }
+
+    @ReactMethod
+    fun getInterfaceInfo(promise: Promise) {
+        promise.resolve(lastOpenInfo ?: Arguments.createMap())
     }
 
     private fun isTrezor(dev: UsbDevice): Boolean {

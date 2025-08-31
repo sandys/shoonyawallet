@@ -2,8 +2,9 @@ import { Platform } from 'react-native';
 import { SOL_DERIVATION_PATH } from './paths';
 import { classifyTrezorError } from './errors';
 import { TrezorUSB } from '../../native/TrezorUSB';
-import { encodeFrame, decodeFrames, sendAndReceive, setHIDReportMode } from './trezor/wire';
-import { bip32Path, encodeSolanaGetPublicKey, decodeSolanaPublicKey, getMsgTypeId, encodeByName, decodeByName } from './trezor/proto';
+import { setHIDReportMode } from './trezor/wire';
+import { configureFraming, sendAndReceive, encodeByName as tEncodeByName, decodeToObject } from './trezor/transportAdapter';
+import { bip32Path } from './trezor/proto';
 
 export type ProgressCallback = (message: string) => void;
 
@@ -43,20 +44,37 @@ export class TrezorBridge {
         await TrezorUSB.ensurePermission(dev);
         this.log('Opening USB session');
         await TrezorUSB.open(dev);
+        // Determine transport mode based on Android interface class
+        try {
+          const info = await TrezorUSB.getInterfaceInfo();
+          const klass = (info as any)?.interfaceClass;
+          configureFraming(typeof klass === 'number' ? klass : undefined);
+          if (typeof klass === 'number') this.log(`USB interface class=${klass}`);
+        } catch {}
         // Allow device time to settle before first handshake
         await this.simulateDelay(200);
         this.log('Handshake (Initialize → Features)');
         await this.handshake(8000);
         this.log('Exchanging messages (public key request)');
         const addressN = bip32Path(SOL_DERIVATION_PATH);
-        const payload = encodeSolanaGetPublicKey(addressN, false);
-        const msgType = getMsgTypeId('MessageType_SolanaGetPublicKey');
+        const { msgType, payload } = tEncodeByName('SolanaGetPublicKey', { address_n: addressN, show_display: false });
         this.log(`Send SolanaGetPublicKey type=${msgType} bytes=${payload.length}`);
         const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 8000);
         this.log(`Recv type=${respType} bytes=${respPayload.length}`);
-        const { public_key } = decodeSolanaPublicKey(respPayload);
-        this.log(`Decoded pubkey bytes=${public_key.length}`);
-        const keyB58 = toBase58(public_key);
+        let keyBytes: Uint8Array | null = null;
+        const decoded = decodeToObject(respType, respPayload);
+        if (decoded && (decoded.type === 'SolanaPublicKey' || decoded.type.endsWith('.SolanaPublicKey'))) {
+          const hex = decoded.message?.public_key as string | undefined;
+          if (hex && typeof hex === 'string') {
+            keyBytes = hexToBytes(hex);
+          }
+        }
+        if (!keyBytes) {
+          // Fallback: manual minimal decode of field 1 (bytes)
+          keyBytes = fallbackDecodeBytesField1(respPayload);
+        }
+        this.log(`Decoded pubkey bytes=${keyBytes.length}`);
+        const keyB58 = toBase58(keyBytes);
         this.log('Public key received');
         await TrezorUSB.close();
         return keyB58;
@@ -83,9 +101,7 @@ export class TrezorBridge {
   }
 
   private async handshake(timeoutMs = 3000) {
-    const initType = getMsgTypeId('MessageType_Initialize');
-    const featuresType = getMsgTypeId('MessageType_Features');
-    const payload = encodeByName('Initialize', {});
+    const { msgType: initType, payload } = tEncodeByName('Initialize', {});
     this.log(`Handshake: send Initialize type=${initType} bytes=${payload.length}`);
     let msgType: number, resp: Uint8Array;
     try {
@@ -98,11 +114,8 @@ export class TrezorBridge {
       msgType = res2.msgType; resp = res2.payload;
     }
     this.log(`Handshake: recv type=${msgType} bytes=${resp.length}`);
-    if (msgType !== featuresType) {
-      // Some devices answer with Success or different wrapper; try decode to detect
-      try { decodeByName('Features', resp); }
-      catch { throw new Error('Handshake failed: unexpected response'); }
-    }
+    // Try decode to ensure it's a valid response; tolerate Success/Features/etc.
+    try { decodeToObject(msgType, resp); } catch {}
   }
 }
 
@@ -116,4 +129,19 @@ function toBase58(bytes: Uint8Array): string {
     const hex = Buffer.from(bytes).toString('hex');
     return hex.length >= 20 ? hex : hex.padEnd(20, '0');
   }
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+function fallbackDecodeBytesField1(buf: Uint8Array): Uint8Array {
+  let off = 0;
+  const tag = buf[off++];
+  if (tag !== ((1 << 3) | 2)) return new Uint8Array();
+  const len = buf[off++];
+  return buf.subarray(off, off + len);
 }

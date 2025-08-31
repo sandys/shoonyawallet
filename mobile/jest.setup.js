@@ -35,3 +35,20 @@ jest.mock(
   },
   { virtual: true },
 );
+
+// Conditionally mock @trezor/protobuf only if not installed (local dev env)
+try {
+  require.resolve('@trezor/protobuf');
+} catch {
+  jest.mock(
+    '@trezor/protobuf',
+    () => ({
+      __esModule: true,
+      parseConfigure: (m) => m,
+      Messages: {},
+      encodeMessage: (_messages, _name, _data) => ({ messageType: 0, message: Buffer.from([]) }),
+      decodeMessage: (_messages, _type, _data) => ({ type: 'Unknown', message: {} }),
+    }),
+    { virtual: true },
+  );
+}
