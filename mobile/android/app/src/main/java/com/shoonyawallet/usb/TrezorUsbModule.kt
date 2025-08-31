@@ -67,8 +67,11 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
             promise.resolve(true)
             return
         }
-        val piFlags = if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
-        val permissionIntent = PendingIntent.getBroadcast(reactContext, 0, Intent(ACTION_USB_PERMISSION), piFlags)
+        // Android 14 (U) disallows mutable PendingIntent for implicit intents.
+        // Use FLAG_IMMUTABLE and make the intent explicit to our package.
+        val piFlags = if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
+        val intent = Intent(ACTION_USB_PERMISSION).setPackage(reactContext.packageName)
+        val permissionIntent = PendingIntent.getBroadcast(reactContext, 0, intent, piFlags)
         val filter = IntentFilter(ACTION_USB_PERMISSION)
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {

@@ -69,6 +69,14 @@ export default function App() {
       setBalance(lamports / 1_000_000_000);
       const tkns = await rpc.getSplTokenBalances(key);
       setTokens(tkns);
+      // Log a concise token summary
+      const summaryTs = new Date().toISOString().slice(11, 23);
+      if (tkns.length === 0) {
+        setLogs((l) => [...l, `${summaryTs} Tokens: none`]);
+      } else {
+        const top = tkns.slice(0, 10).map((t) => `${shortMint(t.mint)}=${formatUiAmount(t.uiAmount)}`).join(', ');
+        setLogs((l) => [...l, `${summaryTs} Tokens (${tkns.length}): ${top}${tkns.length > 10 ? ', …' : ''}`]);
+      }
       setPhase('done');
     } catch (e: any) {
       const msg = e?.message ?? String(e);
