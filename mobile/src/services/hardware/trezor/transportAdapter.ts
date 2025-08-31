@@ -35,10 +35,10 @@ export function configureFraming(fromInterfaceClass?: number) {
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const descriptor = require('./protos/descriptor.json');
-  const solanaPkg = descriptor?.nested?.hw?.nested?.trezor?.nested?.messages?.nested?.solana;
-  if (solanaPkg) {
-    // load under package name 'hw.trezor.messages.solana'
-    loadDefinitions(MESSAGES, 'hw.trezor.messages.solana', async () => solanaPkg);
+  const messagesPkg = descriptor?.nested?.hw?.nested?.trezor?.nested?.messages;
+  if (messagesPkg) {
+    // Load the whole messages package including solana
+    loadDefinitions(MESSAGES, 'hw.trezor.messages', async () => messagesPkg);
   }
 } catch (_) {
   // ignore; definitions may not be generated at test-time
