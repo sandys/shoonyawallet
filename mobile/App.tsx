@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { SafeAreaView, View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, ScrollView } from 'react-native';
+import { SafeAreaView, View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, ScrollView, TextInput } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { TrezorBridge } from './src/services/hardware/TrezorBridge';
 import { TrezorUSB } from './src/native/TrezorUSB';
@@ -26,10 +26,19 @@ export default function App() {
     outMaxPacketSize?: number;
   }>(null);
   const [transportDiag, setTransportDiag] = useState<string>('');
+  const [passphraseVisible, setPassphraseVisible] = useState(false);
+  const [passphraseValue, setPassphraseValue] = useState('');
+  const [passphraseResolve, setPassphraseResolve] = useState<null | ((v: string | null) => void)>(null);
+  const requestPassphrase = () => new Promise<string | null>((resolve) => {
+    setPassphraseValue('');
+    setPassphraseResolve(() => resolve);
+    setPassphraseVisible(true);
+  });
+
   const trezor = useMemo(() => new TrezorBridge((msg) => {
     const ts = new Date().toISOString().slice(11, 23);
     setLogs((l) => [...l, `${ts} ${msg}`].slice(-500));
-  }), []);
+  }, requestPassphrase), []);
   const rpc = useMemo(() => new SolanaRPCService(), []);
   const shortMint = (m: string) => `${m.slice(0, 4)}…${m.slice(-4)}`;
   const formatUiAmount = (n: number) => {
@@ -222,6 +231,25 @@ in=0x${Number(transportInfo.inEndpointAddress ?? 0).toString(16)} mps=${transpor
             <View style={styles.btnrow}>
               <Button title="Close" onPress={() => setShowPermissionHelp(false)} />
               <Button title="Try Again (Slow)" onPress={() => { setShowPermissionHelp(false); start({ slow: true }); }} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={passphraseVisible} animationType="fade" transparent>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.subtitle}>Enter Trezor Passphrase</Text>
+            <Text style={styles.help}>This is only needed for hidden wallets. Leave blank for standard wallet.</Text>
+            <TextInput
+              value={passphraseValue}
+              onChangeText={setPassphraseValue}
+              secureTextEntry
+              placeholder="Passphrase"
+              style={{ borderWidth: 1, borderColor: '#ccc', padding: 8, borderRadius: 6 }}
+            />
+            <View style={styles.btnrow}>
+              <Button title="Cancel" onPress={() => { setPassphraseVisible(false); passphraseResolve?.(null); setPassphraseResolve(null); }} />
+              <Button title="OK" onPress={() => { setPassphraseVisible(false); passphraseResolve?.(passphraseValue); setPassphraseResolve(null); }} />
             </View>
           </View>
         </View>

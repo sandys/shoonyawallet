@@ -7,6 +7,7 @@ import { configureFraming, sendAndReceive } from './trezor/transportAdapter';
 import { bip32Path, encodeSolanaGetPublicKey, decodeSolanaPublicKey, getMsgTypeId, encodeByName as pEncodeByName } from './trezor/proto';
 
 export type ProgressCallback = (message: string) => void;
+export type PassphraseProvider = () => Promise<string | null>;
 
 type ConnectOptions = {
   maxAttempts?: number;
@@ -21,6 +22,7 @@ type ConnectOptions = {
 
 export class TrezorBridge {
   private log: ProgressCallback;
+  private getPassphrase?: PassphraseProvider;
   private isHid = false;
   private static MSG = {
     FEATURES: 17,
@@ -31,8 +33,9 @@ export class TrezorBridge {
     PASSPHRASE_ACK: 42,
   } as const;
 
-  constructor(logger?: ProgressCallback) {
+  constructor(logger?: ProgressCallback, passphraseProvider?: PassphraseProvider) {
     this.log = logger ?? (() => {});
+    this.getPassphrase = passphraseProvider;
   }
 
   async connectAndGetPublicKey(opts: ConnectOptions = {}): Promise<string> {
@@ -98,13 +101,14 @@ export class TrezorBridge {
         this.log(`Send SolanaGetPublicKey type=${msgType} bytes=${payload.length}`);
         let keyB58: string | null = null;
         let guard = 0;
-        while (guard++ < 5 && !keyB58) {
+        while (guard++ < 6 && !keyB58) {
           const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 8000);
           this.log(`Recv type=${respType} bytes=${respPayload.length}`);
-          if (respType === TrezorBridge.MSG.PASSPHRASE_REQUEST || (respType === 0 && respPayload.length === 0)) {
-            this.log('Passphrase requested; acknowledging on-device entry');
-            const ack = encodePassphraseAckOnDevice();
-            await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, ack, 8000);
+          if (respType === TrezorBridge.MSG.PASSPHRASE_REQUEST) {
+            // Try empty passphrase first (standard wallet). If user actually uses hidden wallets, device will ask again or fail.
+            const empty = encodePassphraseAckHost("");
+            this.log('Passphrase requested; sending empty host passphrase for standard wallet');
+            await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, empty, 8000);
             continue;
           }
           if (respType === TrezorBridge.MSG.BUTTON_REQUEST) {
@@ -113,7 +117,17 @@ export class TrezorBridge {
             continue;
           }
           if (respType === TrezorBridge.MSG.FAILURE) {
-            throw new Error('Device returned Failure to SolanaGetPublicKey');
+            // If device failed after empty passphrase, prompt user for passphrase if provider exists
+            if (this.getPassphrase) {
+              this.log('Device Failure after empty passphrase; prompting for host passphrase');
+              const pw = await this.getPassphrase();
+              if (pw == null) throw new Error('Passphrase entry cancelled');
+              const ack = encodePassphraseAckHost(pw);
+              await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, ack, 8000);
+              // retry fetching pubkey
+              continue;
+            }
+            throw new Error('Device Failure; passphrase may be required');
           }
           const { public_key } = decodeSolanaPublicKey(respPayload);
           const keyBytes = public_key ?? new Uint8Array();
@@ -211,12 +225,22 @@ function toBase58(bytes: Uint8Array): string {
   return bs58.encode(bytes);
 }
 
-function encodePassphraseAckOnDevice(): Uint8Array {
-  // PassphraseAck: field 2 (on_device) = true (varint)
+function encodePassphraseAckHost(passphrase: string): Uint8Array {
+  // PassphraseAck: field 1 (passphrase) = string, field 2 (on_device)=false
+  const str = new TextEncoder().encode(passphrase);
   const out: number[] = [];
-  const tag = (2 << 3) | 0; // field 2, varint
-  out.push(tag, 1);
+  // field 1, length-delimited
+  out.push((1 << 3) | 2);
+  // length of string
+  writeVarint(out, str.length >>> 0);
+  for (let i = 0; i < str.length; i++) out.push(str[i]);
+  // field 2, varint = 0 (false)
+  out.push((2 << 3) | 0, 0);
   return Uint8Array.from(out);
+}
+function writeVarint(out: number[], v: number) {
+  while (v > 0x7f) { out.push((v & 0x7f) | 0x80); v >>>= 7; }
+  out.push(v);
 }
 
 // hex helpers removed; no longer needed with protobuf decode
