@@ -91,21 +91,25 @@ jobs:
           else \
             npm install; \
           fi
-      - name: Vendor Trezor protos and generate descriptor
+      - name: Generate Trezor descriptor.json from vendored protos
         working-directory: ./mobile
         run: |
-          mkdir -p src/services/hardware/trezor/protos
-          curl -fsSL https://raw.githubusercontent.com/trezor/trezor-firmware/master/common/protob/messages-solana.proto -o src/services/hardware/trezor/protos/messages-solana.proto || true
-          curl -fsSL https://raw.githubusercontent.com/trezor/trezor-firmware/master/common/protob/messages.proto -o src/services/hardware/trezor/protos/messages.proto || true
-          curl -fsSL https://raw.githubusercontent.com/trezor/trezor-firmware/master/common/protob/messages-common.proto -o src/services/hardware/trezor/protos/messages-common.proto || true
-          if [ -f src/services/hardware/trezor/protos/messages-solana.proto ]; then \
-            npx pbjs -t json -o src/services/hardware/trezor/protos/descriptor.json \
-              src/services/hardware/trezor/protos/messages-common.proto \
-              src/services/hardware/trezor/protos/messages.proto \
-              src/services/hardware/trezor/protos/messages-solana.proto; \
-          else \
-            echo "Skipping descriptor generation (protos unavailable)"; \
-          fi
+          set -euo pipefail
+          PROTO_DIR=src/services/hardware/trezor/protos
+          ls -la "$PROTO_DIR"
+          # Ensure required protos exist (committed in repo)
+          for f in options.proto messages.proto messages-common.proto messages-management.proto messages-solana.proto; do
+            if [ ! -f "$PROTO_DIR/$f" ]; then
+              echo "::error::$f missing in $PROTO_DIR"; exit 1;
+            fi
+          done
+          # Generate descriptor JSON used by runtime
+          npx pbjs -t json -o "$PROTO_DIR/descriptor.json" \
+            "$PROTO_DIR/options.proto" \
+            "$PROTO_DIR/messages-common.proto" \
+            "$PROTO_DIR/messages-management.proto" \
+            "$PROTO_DIR/messages.proto" \
+            "$PROTO_DIR/messages-solana.proto"
       - name: Pre-bundle JS into assets
         working-directory: ./mobile
         run: |
