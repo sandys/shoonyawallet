@@ -1,6 +1,7 @@
 // Mock native USB similar to bridge_exchange
 jest.mock('../src/native/TrezorUSB', () => {
   let readQueue: number[][] = [];
+  let requestCount = 0;
   return {
     TrezorUSB: {
       isSupported: () => true,
@@ -10,9 +11,10 @@ jest.mock('../src/native/TrezorUSB', () => {
       async exchange(bytes: number[], _timeout: number) {
         const wire = jest.requireActual('../src/services/hardware/trezor/wire');
         if (bytes.length > 0) {
-          if (readQueue.length === 0) {
+          if (requestCount === 0) {
             const featuresFrames = wire.encodeFrame(1000, new Uint8Array([]));
             readQueue.push(Array.from(featuresFrames[0]));
+            requestCount += 1;
           } else {
             const payload = new Uint8Array([ (1<<3)|2, 4, 0xde, 0xad, 0xbe, 0xef ]);
             const frames = wire.encodeFrame(999, payload);

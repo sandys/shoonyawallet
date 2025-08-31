@@ -5,6 +5,7 @@ import { TrezorBridge } from '../src/services/hardware/TrezorBridge';
 jest.mock('../src/native/TrezorUSB', () => {
   // Stateful mock to simulate handshake and multi-frame response
   let readQueue: number[][] = [];
+  let requestCount = 0;
   return {
     TrezorUSB: {
       isSupported: () => true,
@@ -17,10 +18,11 @@ jest.mock('../src/native/TrezorUSB', () => {
           // If request sent, enqueue a proper framed response
           // First call will be Initialize → Features
           // Enqueue a single-frame Features (empty payload acceptable for test)
-          if (readQueue.length === 0) {
+          if (requestCount === 0) {
             const features = new Uint8Array([]);
             const featuresFrames = wire.encodeFrame(1000 /* fake Features type */, features);
             readQueue.push(Array.from(featuresFrames[0]));
+            requestCount += 1;
           } else {
             // Subsequent call: return SolanaPublicKey with 4-byte key
             const payload = new Uint8Array([ (1<<3)|2, 4, 0xde, 0xad, 0xbe, 0xef ]);
