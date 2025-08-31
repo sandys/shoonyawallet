@@ -60,4 +60,3 @@ fi
 popd
 
 echo "Preparation complete. Android project is ready."
-

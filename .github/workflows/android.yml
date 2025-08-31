@@ -45,6 +45,16 @@ jobs:
         working-directory: ./shoonyawallet
         run: |
           if [ -f package-lock.json ]; then npm ci || npm install; else npm install; fi
+      - name: Pre-bundle JS into assets
+        working-directory: ./shoonyawallet
+        run: |
+          mkdir -p android/app/src/main/assets android/app/src/main/res
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res
       - name: Build Debug APK
         working-directory: ./shoonyawallet
         run: |
