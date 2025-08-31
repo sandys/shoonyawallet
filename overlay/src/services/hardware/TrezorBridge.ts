@@ -48,8 +48,11 @@ export class TrezorBridge {
         const addressN = bip32Path(SOL_DERIVATION_PATH);
         const payload = encodeSolanaGetPublicKey(addressN, false);
         const msgType = getMsgTypeId('MessageType_SolanaGetPublicKey');
-        const { payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 3000);
+        this.log(`Send SolanaGetPublicKey type=${msgType} bytes=${payload.length}`);
+        const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 3000);
+        this.log(`Recv type=${respType} bytes=${respPayload.length}`);
         const { public_key } = decodeSolanaPublicKey(respPayload);
+        this.log(`Decoded pubkey bytes=${public_key.length}`);
         const keyB58 = toBase58(public_key);
         this.log('Public key received');
         await TrezorUSB.close();
@@ -80,14 +83,9 @@ export class TrezorBridge {
     const initType = getMsgTypeId('MessageType_Initialize');
     const featuresType = getMsgTypeId('MessageType_Features');
     const payload = encodeByName('Initialize', {});
-    const frames = encodeFrame(initType, payload);
-    // Send request frames
-    for (const f of frames) {
-      await TrezorUSB.exchange(Array.from(f), 2000);
-    }
-    // Read a single response frame (temporary — replace with loop until full)
-    const respFrame = await TrezorUSB.exchange([], 2000);
-    const { msgType, payload: resp } = decodeFrames([new Uint8Array(respFrame)]);
+    this.log(`Handshake: send Initialize type=${initType} bytes=${payload.length}`);
+    const { msgType, payload: resp } = await sendAndReceive(TrezorUSB.exchange, initType, payload, 3000);
+    this.log(`Handshake: recv type=${msgType} bytes=${resp.length}`);
     if (msgType !== featuresType) {
       // Some devices answer with Success or different wrapper; try decode to detect
       try { decodeByName('Features', resp); }

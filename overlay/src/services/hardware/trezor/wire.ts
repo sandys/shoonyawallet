@@ -2,6 +2,8 @@
 // NOTE: This is a placeholder; finalize framing fields before production.
 
 export const REPORT_SIZE = 64;
+const HDR_FIRST = new Uint8Array([0x3f, 0x23, 0x23]); // '?##' first-frame
+const HDR_NEXT = new Uint8Array([0x3f, 0x2b, 0x2b]);  // '?++' continuation
 
 type Header = { msgType: number; payloadLen: number; headerLen: number; format: 'A' | 'B' };
 
@@ -36,34 +38,57 @@ export function concat(parts: Uint8Array[]): Uint8Array {
 // This is NOT the official Trezor HID framing and must be replaced with
 // correct framing. It exists to allow unit tests and end-to-end plumbing.
 export function encodeFrame(msgType: number, payload: Uint8Array): Uint8Array[] {
-  // Use Format B (candidate for official): '##' + type BE16 + len BE32
-  const header = new Uint8Array(8);
-  header[0] = 0x23; // '#'
-  header[1] = 0x23; // '#'
-  header[2] = (msgType >>> 8) & 0xff;
-  header[3] = msgType & 0xff;
+  // Official-style Trezor HID framing (first + continuation frames)
   const len = payload.length >>> 0;
-  header[4] = (len >>> 24) & 0xff;
-  header[5] = (len >>> 16) & 0xff;
-  header[6] = (len >>> 8) & 0xff;
-  header[7] = len & 0xff;
-  const framed = concat([header, payload]);
-  return chunk(framed, REPORT_SIZE);
+  const firstHeader = new Uint8Array(3 + 2 + 4); // '?##' + type BE16 + len BE32
+  firstHeader.set(HDR_FIRST, 0);
+  firstHeader[3] = (msgType >>> 8) & 0xff;
+  firstHeader[4] = msgType & 0xff;
+  firstHeader[5] = (len >>> 24) & 0xff;
+  firstHeader[6] = (len >>> 16) & 0xff;
+  firstHeader[7] = (len >>> 8) & 0xff;
+  firstHeader[8] = len & 0xff;
+
+  const firstAvail = REPORT_SIZE - firstHeader.length;
+  const out: Uint8Array[] = [];
+  const firstChunk = payload.subarray(0, Math.min(firstAvail, payload.length));
+  const firstFrame = new Uint8Array(firstHeader.length + firstChunk.length);
+  firstFrame.set(firstHeader, 0);
+  firstFrame.set(firstChunk, firstHeader.length);
+  // Pad to REPORT_SIZE
+  out.push(padToReport(firstFrame));
+
+  let offset = firstChunk.length;
+  let seq = 0;
+  while (offset < payload.length) {
+    const contHeader = new Uint8Array(3 + 2); // '?++' + seq BE16
+    contHeader.set(HDR_NEXT, 0);
+    contHeader[3] = (seq >>> 8) & 0xff;
+    contHeader[4] = seq & 0xff;
+    seq++;
+    const avail = REPORT_SIZE - contHeader.length;
+    const chunkData = payload.subarray(offset, Math.min(offset + avail, payload.length));
+    const frame = new Uint8Array(contHeader.length + chunkData.length);
+    frame.set(contHeader, 0);
+    frame.set(chunkData, contHeader.length);
+    out.push(padToReport(frame));
+    offset += chunkData.length;
+  }
+  return out;
 }
 
 function tryParseHeader(buf: Uint8Array): Header | null {
-  if (buf.length < 8) return null;
-  // Format A: 0x3f 0x23 + type LE16 + len LE32
-  if (buf[0] === 0x3f && buf[1] === 0x23) {
+  // First frame: '?##' + type BE16 + len BE32
+  if (buf.length >= 9 && buf[0] === HDR_FIRST[0] && buf[1] === HDR_FIRST[1] && buf[2] === HDR_FIRST[2]) {
+    const type = (buf[3] << 8) | buf[4];
+    const len = (buf[5] << 24) | (buf[6] << 16) | (buf[7] << 8) | buf[8];
+    return { msgType: type >>> 0, payloadLen: len >>> 0, headerLen: 9, format: 'B' };
+  }
+  // Legacy candidate: 0x3f 0x23 + type LE16 + len LE32
+  if (buf.length >= 8 && buf[0] === 0x3f && buf[1] === 0x23) {
     const type = buf[2] | (buf[3] << 8);
     const len = buf[4] | (buf[5] << 8) | (buf[6] << 16) | (buf[7] << 24);
-    return { msgType: type, payloadLen: len >>> 0, headerLen: 8, format: 'A' };
-  }
-  // Format B (candidate): 0x23 0x23 + type BE16 + len BE32
-  if (buf[0] === 0x23 && buf[1] === 0x23) {
-    const type = (buf[2] << 8) | buf[3];
-    const len = (buf[4] << 24) | (buf[5] << 16) | (buf[6] << 8) | buf[7];
-    return { msgType: type >>> 0, payloadLen: len >>> 0, headerLen: 8, format: 'B' };
+    return { msgType: type >>> 0, payloadLen: len >>> 0, headerLen: 8, format: 'A' };
   }
   return null;
 }
@@ -108,4 +133,11 @@ export async function sendAndReceive(
   const full = concat(received);
   const payloadBuf = full.subarray(header.headerLen, header.headerLen + header.payloadLen);
   return { msgType: header.msgType, payload: payloadBuf };
+}
+
+function padToReport(frame: Uint8Array): Uint8Array {
+  if (frame.length === REPORT_SIZE) return frame;
+  const out = new Uint8Array(REPORT_SIZE);
+  out.set(frame, 0);
+  return out;
 }

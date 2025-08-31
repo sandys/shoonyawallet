@@ -31,8 +31,16 @@ npm pkg set name="shoonyawallet"
 npm pkg set scripts.typecheck="tsc --noEmit"
 npm pkg set scripts.lint="eslint ."
 npm pkg set scripts.format="prettier --write ."
-npm install --save @solana/web3.js bs58 protobufjs
-npm install --save-dev @types/jest @testing-library/react-native @testing-library/jest-native jest-environment-jsdom protobufjs-cli
+# Declare deps in package.json so installs are centralized
+npm pkg set dependencies."@solana/web3.js"="^1.95.0"
+npm pkg set dependencies.bs58="^5.0.0"
+npm pkg set dependencies.protobufjs="^7.2.6"
+npm pkg set dependencies."@react-native-clipboard/clipboard"="^1.11.1"
+npm pkg set devDependencies."@types/jest"="^29.5.12"
+npm pkg set devDependencies."@testing-library/react-native"="^12.5.2"
+npm pkg set devDependencies."@testing-library/jest-native"="^5.0.0"
+npm pkg set devDependencies."jest-environment-jsdom"="^29.7.0"
+npm pkg set devDependencies."protobufjs-cli"="^1.1.1"
 
 # 4) Opt-in strict RN types in tsconfig
 if [ -f tsconfig.json ]; then
@@ -51,11 +59,7 @@ NODE
 fi
 
 # 5) Ensure lockfile and node_modules exist
-if [ -f package-lock.json ]; then
-  npm ci || npm install
-else
-  npm install
-fi
+npm install
 
 popd
 
@@ -79,6 +83,26 @@ else
   echo "WARN: Could not fetch Trezor proto files; will fallback to minimal inline protos."
 fi
 popd
+
+# 8) Ensure native USB module is registered in MainApplication
+MAIN_KT=$(ls "$APP_DIR"/android/app/src/main/java/**/MainApplication.kt 2>/dev/null | head -n1 || true)
+MAIN_JAVA=$(ls "$APP_DIR"/android/app/src/main/java/**/MainApplication.java 2>/dev/null | head -n1 || true)
+if [ -n "$MAIN_KT" ]; then
+  if ! grep -q "com.shoonyawallet.usb.TrezorUsbPackage" "$MAIN_KT"; then
+    sed -i '0,/package / s//&\nimport com.shoonyawallet.usb.TrezorUsbPackage;/' "$MAIN_KT" || true
+  fi
+  if grep -q "return packages" "$MAIN_KT" && ! grep -q "TrezorUsbPackage()" "$MAIN_KT"; then
+    sed -i '0,/return packages/ s//            packages.add(TrezorUsbPackage())\n            return packages/' "$MAIN_KT" || true
+  fi
+fi
+if [ -n "$MAIN_JAVA" ]; then
+  if ! grep -q "com.shoonyawallet.usb.TrezorUsbPackage" "$MAIN_JAVA"; then
+    sed -i '0,/package / s//&\nimport com.shoonyawallet.usb.TrezorUsbPackage;/' "$MAIN_JAVA" || true
+  fi
+  if grep -q "return packages;" "$MAIN_JAVA" && ! grep -q "new TrezorUsbPackage()" "$MAIN_JAVA"; then
+    sed -i '0,/return packages;/ s//        packages.add(new TrezorUsbPackage());\n        return packages;/' "$MAIN_JAVA" || true
+  fi
+fi
 
 # 6) Patch MainApplication to register TrezorUsbPackage (Kotlin or Java)
 APP_MAIN_KT="$APP_DIR/android/app/src/main/java/com/$APP_NAME/MainApplication.kt"

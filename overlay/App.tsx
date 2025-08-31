@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { SafeAreaView, View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal } from 'react-native';
+import { SafeAreaView, View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, ScrollView } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
 import { TrezorBridge } from './src/services/hardware/TrezorBridge';
 import { SolanaRPCService } from './src/services/rpc/SolanaRPCService';
 import { classifyTrezorError } from './src/services/hardware/errors';
@@ -13,7 +14,10 @@ export default function App() {
   const [pubkey, setPubkey] = useState<string | null>(null);
   const [balance, setBalance] = useState<number | null>(null);
   const [showPermissionHelp, setShowPermissionHelp] = useState(false);
-  const trezor = useMemo(() => new TrezorBridge((msg) => setLogs((l) => [...l, msg])), []);
+  const trezor = useMemo(() => new TrezorBridge((msg) => {
+    const ts = new Date().toISOString().slice(11, 23);
+    setLogs((l) => [...l, `${ts} ${msg}`].slice(-500));
+  }), []);
   const rpc = useMemo(() => new SolanaRPCService(), []);
 
   const start = async (opts?: { slow?: boolean }) => {
@@ -84,9 +88,25 @@ export default function App() {
         </View>
       )}
       <View style={styles.logs}>
-        {logs.slice(-8).map((l, i) => (
-          <Text key={i} style={styles.logLine}>• {l}</Text>
-        ))}
+        <Text style={styles.subtitle}>Logs</Text>
+        <ScrollView style={styles.logScroll} contentContainerStyle={styles.logContent}>
+          {logs.map((l, i) => (
+            <Text key={i} style={styles.logLine}>{l}</Text>
+          ))}
+        </ScrollView>
+        <View style={styles.btnrow}>
+          <Button title="Copy Logs" onPress={() => {
+            try {
+              Clipboard.setString(logs.join('\n'));
+              const ts = new Date().toISOString().slice(11, 23);
+              setLogs((l) => [...l, `${ts} Copied ${l.length} lines to clipboard`]);
+            } catch (e) {
+              const ts = new Date().toISOString().slice(11, 23);
+              setLogs((l) => [...l, `${ts} Copy failed: ${String(e)}`]);
+            }
+          }} />
+          <Button title="Clear Logs" onPress={() => setLogs([])} />
+        </View>
       </View>
       <Modal visible={showPermissionHelp} animationType="slide" transparent>
         <View style={styles.modalBackdrop}>
@@ -120,7 +140,9 @@ const styles = StyleSheet.create({
   mono: { fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }), fontSize: 12 },
   value: { fontSize: 24, fontWeight: '700' },
   logs: { flex: 1, borderTopWidth: StyleSheet.hairlineWidth, borderColor: '#ddd', paddingTop: 8 },
-  logLine: { fontSize: 12, color: '#333' },
+  logScroll: { flex: 1 },
+  logContent: { paddingBottom: 16 },
+  logLine: { fontSize: 12, color: '#333', fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }) },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
   modalCard: { backgroundColor: 'white', padding: 16, borderRadius: 8, width: '92%', gap: 8 },
 });
