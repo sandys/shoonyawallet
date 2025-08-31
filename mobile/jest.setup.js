@@ -12,12 +12,5 @@ jest.mock('@react-native-clipboard/clipboard', () => ({
   default: { setString: jest.fn(), getString: jest.fn().mockResolvedValue('') },
 }));
 
-// Force Platform to Android for tests
-jest.mock('react-native', () => {
-  const RN = jest.requireActual('react-native');
-  return {
-    ...RN,
-    Platform: { ...RN.Platform, OS: 'android' },
-  };
-});
-
+// Do not mock the entire react-native module to avoid TurboModule lookups.
+// TrezorBridge skips iOS-only guards under Jest via JEST_WORKER_ID.
