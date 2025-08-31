@@ -4,7 +4,7 @@ jest.mock('react-native', () => ({
   ...jest.requireActual('react-native'),
   Platform: { ...jest.requireActual('react-native').Platform, OS: 'android' },
 }));
-import { encodeSolanaGetPublicKey } from '../src/services/hardware/trezor/proto';
+// (no direct imports of wire/proto to satisfy jest.mock scoping)
 
 // Mock native USB module
 jest.mock('../src/native/TrezorUSB', () => {

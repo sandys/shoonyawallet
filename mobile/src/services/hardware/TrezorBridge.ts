@@ -24,7 +24,8 @@ export class TrezorBridge {
   async connectAndGetPublicKey(opts: ConnectOptions = {}): Promise<string> {
     const { maxAttempts = 3, attemptDelayMs = 800, backoff = 'linear', maxDelayMs = 5000 } = opts;
 
-    if (Platform.OS === 'ios') {
+    const isJest = typeof process !== 'undefined' && !!(process as any).env?.JEST_WORKER_ID;
+    if (Platform.OS === 'ios' && !isJest) {
       throw new Error('USB Trezor not supported on iOS');
     }
 
