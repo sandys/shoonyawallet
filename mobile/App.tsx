@@ -14,6 +14,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [pubkey, setPubkey] = useState<string | null>(null);
   const [balance, setBalance] = useState<number | null>(null);
+  const [tokens, setTokens] = useState<Array<{ mint: string; uiAmount: number; amount: string; decimals: number }>>([]);
   const [showPermissionHelp, setShowPermissionHelp] = useState(false);
   const [transportInfo, setTransportInfo] = useState<null | {
     interfaceClass?: number;
@@ -30,6 +31,12 @@ export default function App() {
     setLogs((l) => [...l, `${ts} ${msg}`].slice(-500));
   }), []);
   const rpc = useMemo(() => new SolanaRPCService(), []);
+  const shortMint = (m: string) => `${m.slice(0, 4)}…${m.slice(-4)}`;
+  const formatUiAmount = (n: number) => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}m`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(2)}k`;
+    return n.toFixed(n < 1 ? 6 : 2);
+  };
 
   const pullNativeLogs = async () => {
     try {
@@ -60,6 +67,8 @@ export default function App() {
       setPhase('fetching');
       const lamports = await rpc.getBalance(key);
       setBalance(lamports / 1_000_000_000);
+      const tkns = await rpc.getSplTokenBalances(key);
+      setTokens(tkns);
       setPhase('done');
     } catch (e: any) {
       const msg = e?.message ?? String(e);
@@ -122,6 +131,19 @@ export default function App() {
           <Text selectable style={styles.mono}>{pubkey}</Text>
           <Text style={styles.subtitle}>SOL Balance</Text>
           <Text style={styles.value}>{balance?.toFixed(6)} SOL</Text>
+          <Text style={styles.subtitle}>Tokens</Text>
+          {tokens.length === 0 ? (
+            <Text style={styles.help}>No SPL tokens found.</Text>
+          ) : (
+            <View style={{ gap: 4 }}>
+              {tokens.map((t) => (
+                <View key={`${t.mint}`} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={styles.mono}>{shortMint(t.mint)}</Text>
+                  <Text style={styles.mono}>{formatUiAmount(t.uiAmount)}</Text>
+                </View>
+              ))}
+            </View>
+          )}
           <Button title="Refresh" onPress={start} />
         </View>
       )}

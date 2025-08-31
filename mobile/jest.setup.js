@@ -29,6 +29,7 @@ jest.mock(
   () => {
     const Connection = jest.fn().mockImplementation(() => ({
       getBalance: jest.fn().mockResolvedValue(0),
+      getParsedTokenAccountsByOwner: jest.fn().mockResolvedValue({ value: [] }),
     }));
     const PublicKey = jest.fn();
     return { __esModule: true, Connection, PublicKey };
