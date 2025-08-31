@@ -12,6 +12,8 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.hardware.usb.UsbRequest
+import java.nio.ByteBuffer
 import com.facebook.react.bridge.*
 import android.util.Log
 import android.os.SystemClock
@@ -153,7 +155,7 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
             connection?.releaseInterface(iface)
             connection?.close()
             connection = null; iface = null; inEndpoint = null; outEndpoint = null
-            lastOpenInfo = null
+            // Keep lastOpenInfo for diagnostics even after close
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("CLOSE_FAILED", e)
@@ -193,6 +195,44 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
                 for (i in 0 until r) outArr.pushInt(buf[i].toInt() and 0xFF)
                 total += r
                 break
+            }
+        }
+        if (total == 0) {
+            // Fallback: try interrupt-queue using UsbRequest
+            try {
+                val usbReq = UsbRequest()
+                if (usbReq.initialize(conn, inp)) {
+                    val bb = ByteBuffer.allocate(readSize)
+                    bb.clear()
+                    if (usbReq.queue(bb, readSize)) {
+                        val remainTotal = (timeoutMs - (SystemClock.elapsedRealtime() - start)).toInt()
+                        val deadline = SystemClock.elapsedRealtime() + remainTotal
+                        var done = false
+                        while (!done && SystemClock.elapsedRealtime() < deadline) {
+                            val waited = conn.requestWait()
+                            if (waited === usbReq) {
+                                val count = bb.position()
+                                if (count > 0) {
+                                    val arr = ByteArray(count)
+                                    bb.flip(); bb.get(arr)
+                                    val preview = arr.take(minOf(count, 16)).joinToString(" ") { b -> String.format("%02X", (b.toInt() and 0xFF)) }
+                                    addLog("RX[$count] (irq): $preview …")
+                                    for (i in 0 until count) outArr.pushInt(arr[i].toInt() and 0xFF)
+                                    total += count
+                                }
+                                done = true
+                            } else if (waited == null) {
+                                done = true
+                            }
+                        }
+                        if (!done) {
+                            try { usbReq.cancel() } catch (_: Exception) {}
+                        }
+                    }
+                    try { usbReq.close() } catch (_: Exception) {}
+                }
+            } catch (e: Exception) {
+                addLog("UsbRequest fallback failed: ${e.message}")
             }
         }
         if (total == 0) { promise.reject("READ_FAIL", "bulkTransfer read failed: -1"); return }

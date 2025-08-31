@@ -15,6 +15,16 @@ export default function App() {
   const [pubkey, setPubkey] = useState<string | null>(null);
   const [balance, setBalance] = useState<number | null>(null);
   const [showPermissionHelp, setShowPermissionHelp] = useState(false);
+  const [transportInfo, setTransportInfo] = useState<null | {
+    interfaceClass?: number;
+    interfaceSubclass?: number;
+    interfaceProtocol?: number;
+    inEndpointAddress?: number;
+    outEndpointAddress?: number;
+    inMaxPacketSize?: number;
+    outMaxPacketSize?: number;
+  }>(null);
+  const [transportDiag, setTransportDiag] = useState<string>('');
   const trezor = useMemo(() => new TrezorBridge((msg) => {
     const ts = new Date().toISOString().slice(11, 23);
     setLogs((l) => [...l, `${ts} ${msg}`].slice(-500));
@@ -63,6 +73,16 @@ export default function App() {
       await pullNativeLogs();
       setPhase('error');
     }
+    // Always try to pull transport interface info for diagnostics
+    try {
+      const info = await TrezorUSB.getInterfaceInfo();
+      setTransportInfo(info as any);
+      const klass = (info as any)?.interfaceClass as number | undefined;
+      const isHid = klass === 0x03;
+      const mode = isHid ? 'hid' : 'vendor';
+      const hidFallback = isHid ? 'enabled' : 'disabled';
+      setTransportDiag(`protocol=v1, iface=${mode}; hidLeadingZeroFallback=${hidFallback}`);
+    } catch {}
   };
 
   useEffect(() => {
@@ -105,6 +125,16 @@ export default function App() {
           <Button title="Refresh" onPress={start} />
         </View>
       )}
+      <View style={styles.section}>
+        <Text style={styles.subtitle}>Transport</Text>
+        <Text style={styles.help}>{transportDiag || 'protocol=v1'}</Text>
+        {transportInfo && (
+          <Text style={styles.mono}>
+            {`class=${transportInfo.interfaceClass ?? '-'} subclass=${transportInfo.interfaceSubclass ?? '-'} proto=${transportInfo.interfaceProtocol ?? '-'}
+in=0x${Number(transportInfo.inEndpointAddress ?? 0).toString(16)} mps=${transportInfo.inMaxPacketSize ?? '-'} out=0x${Number(transportInfo.outEndpointAddress ?? 0).toString(16)} mps=${transportInfo.outMaxPacketSize ?? '-'}`}
+          </Text>
+        )}
+      </View>
       <View style={styles.logs}>
         <Text style={styles.subtitle}>Logs</Text>
         <ScrollView style={styles.logScroll} contentContainerStyle={styles.logContent}>
@@ -113,32 +143,21 @@ export default function App() {
           ))}
         </ScrollView>
         <View style={styles.btnrow}>
-          <Button title="Copy Logs" onPress={() => {
+          <Button title="Copy Logs" onPress={async () => {
             try {
-              Clipboard.setString(logs.join('\n'));
+              // Merge app logs with native logs (if any) at copy time
+              const native = await TrezorUSB.getDebugLog().catch(() => [] as string[]);
+              const merged = [...logs, ...(Array.isArray(native) ? native : [])];
+              Clipboard.setString(merged.join('\n'));
               const ts = new Date().toISOString().slice(11, 23);
-              setLogs((l) => [...l, `${ts} Copied ${l.length} lines to clipboard`]);
+              setLogs((l) => [...l, `${ts} Copied ${merged.length} lines (app+native) to clipboard`]);
             } catch (e) {
               const ts = new Date().toISOString().slice(11, 23);
               setLogs((l) => [...l, `${ts} Copy failed: ${String(e)}`]);
             }
           }} />
           <Button title="Clear Logs" onPress={() => setLogs([])} />
-          {Platform.OS === 'android' && (
-            <>
-              <Button title="Pull Native Logs" onPress={pullNativeLogs} />
-              <Button title="Clear Native Logs" onPress={async () => {
-                try {
-                  await TrezorUSB.clearDebugLog();
-                  const ts = new Date().toISOString().slice(11, 23);
-                  setLogs((l) => [...l, `${ts} Cleared native log buffer`]);
-                } catch (e) {
-                  const ts = new Date().toISOString().slice(11, 23);
-                  setLogs((l) => [...l, `${ts} Failed to clear native logs: ${String(e)}`]);
-                }
-              }} />
-            </>
-          )}
+          {/* Single Copy Logs button; no extra native log controls */}
         </View>
       </View>
       <Modal visible={showPermissionHelp} animationType="slide" transparent>

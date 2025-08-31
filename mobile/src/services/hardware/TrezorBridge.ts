@@ -17,6 +17,7 @@ type ConnectOptions = {
 
 export class TrezorBridge {
   private log: ProgressCallback;
+  private isHid = false;
 
   constructor(logger?: ProgressCallback) {
     this.log = logger ?? (() => {});
@@ -48,8 +49,12 @@ export class TrezorBridge {
         try {
           const info = await TrezorUSB.getInterfaceInfo();
           const klass = (info as any)?.interfaceClass;
+          this.isHid = klass === 0x03;
           configureFraming(typeof klass === 'number' ? klass : undefined);
-          if (typeof klass === 'number') this.log(`USB interface class=${klass}`);
+          if (typeof klass === 'number') {
+            this.log(`USB interface class=${klass}`);
+            this.log(`Transport diag: protocol=v1, iface=${this.isHid ? 'hid' : 'vendor'}; hidLeadingZeroFallback=${this.isHid ? 'enabled' : 'disabled'}`);
+          }
         } catch {}
         // Allow device time to settle before first handshake
         await this.simulateDelay(200);
@@ -108,10 +113,14 @@ export class TrezorBridge {
       const res = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
       msgType = res.msgType; resp = res.payload;
     } catch (e) {
-      this.log('Handshake failed on first attempt; retrying with leadingZero HID report mode');
-      setHIDReportMode('leadingZero');
-      const res2 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
-      msgType = res2.msgType; resp = res2.payload;
+      if (this.isHid) {
+        this.log('Handshake failed on first attempt; retrying with leadingZero HID report mode');
+        setHIDReportMode('leadingZero');
+        const res2 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
+        msgType = res2.msgType; resp = res2.payload;
+      } else {
+        throw e;
+      }
     }
     this.log(`Handshake: recv type=${msgType} bytes=${resp.length}`);
     // Try decode to ensure it's a valid response; tolerate Success/Features/etc.
