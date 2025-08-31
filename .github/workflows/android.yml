@@ -11,6 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify app path
+        run: |
+          if [ ! -f mobile/package.json ]; then
+            echo "::error:: mobile/package.json not found. Ensure 'mobile/' is committed on this branch.";
+            ls -la; exit 1; fi
+          ls -la mobile
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -34,6 +40,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify app path
+        run: |
+          if [ ! -f mobile/package.json ]; then
+            echo "::error:: mobile/package.json not found. Ensure 'mobile/' is committed on this branch.";
+            ls -la; exit 1; fi
+          ls -la mobile
       - uses: actions/setup-node@v4
         with:
           node-version: 20
