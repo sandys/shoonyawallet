@@ -1,30 +1,44 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { SafeAreaView, View, Text, Button, ActivityIndicator, StyleSheet, Platform } from 'react-native';
+import { SafeAreaView, View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal } from 'react-native';
 import { TrezorBridge } from './src/services/hardware/TrezorBridge';
 import { SolanaRPCService } from './src/services/rpc/SolanaRPCService';
+import { classifyTrezorError } from './src/services/hardware/errors';
 
-type Phase = 'idle' | 'connecting' | 'connected' | 'fetching' | 'done' | 'error';
+type Phase = 'idle' | 'connecting' | 'fetching' | 'done' | 'error';
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [logs, setLogs] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
   const [pubkey, setPubkey] = useState<string | null>(null);
   const [balance, setBalance] = useState<number | null>(null);
+  const [showPermissionHelp, setShowPermissionHelp] = useState(false);
   const trezor = useMemo(() => new TrezorBridge((msg) => setLogs((l) => [...l, msg])), []);
   const rpc = useMemo(() => new SolanaRPCService(), []);
 
-  const start = async () => {
+  const start = async (opts?: { slow?: boolean }) => {
     setLogs([]);
+    setError(null);
     setPhase('connecting');
     try {
-      const key = await trezor.connectAndGetPublicKey({ maxAttempts: 3 });
+      const key = await trezor.connectAndGetPublicKey(
+        opts?.slow
+          ? { maxAttempts: 5, attemptDelayMs: 1200, backoff: 'exponential', maxDelayMs: 8000 }
+          : { maxAttempts: 3, attemptDelayMs: 600, backoff: 'linear' }
+      );
       setPubkey(key);
       setPhase('fetching');
       const lamports = await rpc.getBalance(key);
       setBalance(lamports / 1_000_000_000);
       setPhase('done');
     } catch (e: any) {
-      setLogs((l) => [...l, `Error: ${e?.message ?? String(e)}`]);
+      const msg = e?.message ?? String(e);
+      setLogs((l) => [...l, `Error: ${msg}`]);
+      setError(msg);
+      const cls = classifyTrezorError(msg);
+      if (cls.code === 'PERMISSION_DENIED' || cls.code === 'DEVICE_NOT_FOUND') {
+        setShowPermissionHelp(true);
+      }
       setPhase('error');
     }
   };
@@ -47,10 +61,17 @@ export default function App() {
           <Text style={styles.subtitle}>Connect Trezor and Read Balance</Text>
           <ActivityIndicator size="large" />
           <Text style={styles.status}>Status: {phase}</Text>
+          <Text style={styles.help}>
+            Ensure Trezor Safe 3 is connected via USB-OTG and unlocked. On Android, grant USB permission when prompted.
+          </Text>
           <View style={styles.btnrow}>
-            <Button title="Start" onPress={start} />
-            <Button title="Retry" onPress={start} />
+            <Button title="Start" onPress={() => start()} />
+            <Button title="Retry" onPress={() => start()} />
+            <Button title="Slow Retry" onPress={() => start({ slow: true })} />
           </View>
+          {phase === 'error' && !!error && (
+            <Text style={styles.error}>Error: {error}</Text>
+          )}
         </View>
       )}
       {phase === 'done' && (
@@ -67,6 +88,21 @@ export default function App() {
           <Text key={i} style={styles.logLine}>• {l}</Text>
         ))}
       </View>
+      <Modal visible={showPermissionHelp} animationType="slide" transparent>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.subtitle}>Grant USB Permission</Text>
+            <Text style={styles.help}>1. Connect Trezor Safe 3 via USB-OTG.</Text>
+            <Text style={styles.help}>2. Unlock device and keep it on home screen.</Text>
+            <Text style={styles.help}>3. When Android prompts for USB access, tap Allow (optionally Always).</Text>
+            <Text style={styles.help}>4. If no prompt, unplug/replug or enable OTG in settings.</Text>
+            <View style={styles.btnrow}>
+              <Button title="Close" onPress={() => setShowPermissionHelp(false)} />
+              <Button title="Try Again (Slow)" onPress={() => { setShowPermissionHelp(false); start({ slow: true }); }} />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -78,10 +114,13 @@ const styles = StyleSheet.create({
   section: { gap: 8 },
   subtitle: { fontSize: 16, fontWeight: '600' },
   status: { color: '#666' },
+  help: { color: '#555' },
+  error: { color: '#b00020' },
   btnrow: { flexDirection: 'row', gap: 8 },
   mono: { fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }), fontSize: 12 },
   value: { fontSize: 24, fontWeight: '700' },
   logs: { flex: 1, borderTopWidth: StyleSheet.hairlineWidth, borderColor: '#ddd', paddingTop: 8 },
   logLine: { fontSize: 12, color: '#333' },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
+  modalCard: { backgroundColor: 'white', padding: 16, borderRadius: 8, width: '92%', gap: 8 },
 });
-
