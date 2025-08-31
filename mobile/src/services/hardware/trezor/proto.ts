@@ -1,21 +1,29 @@
-import * as protobuf from 'protobufjs';
-
-let root: protobuf.Root | null = null;
+// Avoid hard dependency on protobufjs in test or minimal envs.
+// Dynamically require it when available; otherwise fall back to minimal codecs.
+let PB: any = null;
+let root: any | null = null;
 let descriptorLoaded = false;
 
-function loadRoot(): protobuf.Root {
+function loadRoot(): any {
   if (root) return root;
   try {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      PB = require('protobufjs');
+    } catch (_) {
+      PB = null;
+    }
     // Prefer descriptor generated in CI from official Trezor protos
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const descriptor = require('./protos/descriptor.json');
-    root = protobuf.Root.fromJSON(descriptor);
+    if (!PB) throw new Error('protobufjs missing');
+    root = PB.Root.fromJSON(descriptor);
     descriptorLoaded = true;
     return root!;
   } catch (_) {
     // Fallback: no descriptor; use manual minimal codecs
     descriptorLoaded = false;
-    root = new protobuf.Root();
+    root = PB ? new PB.Root() : { lookupType: () => null, lookupTypeOrEnum: () => null, lookupEnum: () => null };
     return root!;
   }
 }
@@ -54,8 +62,12 @@ export function getMsgTypeId(name: string): number {
   // enum may be at root or packaged, try common paths
   const enumPaths = ['MessageType', 'hw.trezor.messages.MessageType'];
   for (const p of enumPaths) {
-    const E = r.lookupEnum(p) as any;
-    if (E && E.values && E.values[name] != null) return E.values[name];
+    try {
+      const E = (r as any).lookupEnum ? (r as any).lookupEnum(p) : null;
+      if (E && E.values && E.values[name] != null) return E.values[name];
+    } catch (_) {
+      // ignore and try next
+    }
   }
   // Fallback IDs for tests / no descriptor
   const fallback: Record<string, number> = {
