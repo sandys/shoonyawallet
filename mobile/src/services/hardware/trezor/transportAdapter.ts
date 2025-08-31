@@ -7,6 +7,15 @@ import { Messages, parseConfigure, encodeMessage as pbEncodeMessage, decodeMessa
 const MESSAGES = parseConfigure(Messages);
 
 let trezorProtocol: any = null;
+function toNodeBuffer(u8: Uint8Array): any {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Buffer } = require('buffer');
+    return Buffer.from(u8);
+  } catch (_) {
+    return Uint8Array.from(u8);
+  }
+}
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   trezorProtocol = require('@trezor/protocol');
@@ -39,7 +48,7 @@ try {
 export function encodeMessage(msgType: number, payload: Uint8Array): Uint8Array[] {
   if (trezorProtocol?.v1?.encode) {
     try {
-      const encoded: Buffer = trezorProtocol.v1.encode(Buffer.from(payload), { messageType: msgType });
+      const encoded = trezorProtocol.v1.encode(toNodeBuffer(payload), { messageType: msgType });
       return encodeFromEncoded(new Uint8Array(encoded));
     } catch (_) {
       // fall through
@@ -52,7 +61,7 @@ export function decodeMessage(frames: Uint8Array[]): { msgType: number; payload:
   const merged = concat(frames);
   if (trezorProtocol?.v1?.decode) {
     try {
-      const d = trezorProtocol.v1.decode(Buffer.from(merged));
+      const d = trezorProtocol.v1.decode(toNodeBuffer(merged));
       return { msgType: d.messageType, payload: new Uint8Array(d.payload) };
     } catch (_) {
       // fall back
@@ -67,7 +76,7 @@ function tryParseHeader(buf: Uint8Array): { msgType: number; payloadLen: number;
   // Use official decoder if available
   if (trezorProtocol?.v1?.decode) {
     try {
-      const d = trezorProtocol.v1.decode(Buffer.from(buf));
+      const d = trezorProtocol.v1.decode(toNodeBuffer(buf));
       if (d && typeof d.messageType === 'number' && typeof d.length === 'number') {
         return { msgType: d.messageType >>> 0, payloadLen: d.length >>> 0, headerLen: 9 };
       }
@@ -138,7 +147,7 @@ export function encodeByName(name: string, data: any): { msgType: number; payloa
 
 export function decodeToObject(msgType: number, payload: Uint8Array): { type: string; message: any } | null {
   try {
-    const { type, message } = pbDecodeMessage(MESSAGES, msgType, Buffer.from(payload));
+    const { type, message } = pbDecodeMessage(MESSAGES, msgType, toNodeBuffer(payload));
     return { type, message };
   } catch (_) {
     return null;

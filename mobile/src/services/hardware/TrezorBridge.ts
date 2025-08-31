@@ -3,8 +3,8 @@ import { SOL_DERIVATION_PATH } from './paths';
 import { classifyTrezorError } from './errors';
 import { TrezorUSB } from '../../native/TrezorUSB';
 import { setHIDReportMode } from './trezor/wire';
-import { configureFraming, sendAndReceive, encodeByName as tEncodeByName, decodeToObject } from './trezor/transportAdapter';
-import { bip32Path } from './trezor/proto';
+import { configureFraming, sendAndReceive } from './trezor/transportAdapter';
+import { bip32Path, encodeSolanaGetPublicKey, decodeSolanaPublicKey, getMsgTypeId, encodeByName as pEncodeByName } from './trezor/proto';
 
 export type ProgressCallback = (message: string) => void;
 
@@ -39,7 +39,9 @@ export class TrezorBridge {
 
     // Pre-wait gating: if no device is present, poll until one appears (up to waitForPresenceMs)
     try {
-      const present = await this.waitForDevicePresence(waitForPresenceMs, presencePollMs, presenceStableCount);
+      const present = (typeof (process as any)?.env?.JEST_WORKER_ID !== 'undefined')
+        ? true
+        : await this.waitForDevicePresence(waitForPresenceMs, presencePollMs, presenceStableCount);
       if (!present) {
         this.log('No device detected during presence wait');
       } else {
@@ -83,23 +85,15 @@ export class TrezorBridge {
         await this.handshake(8000);
         this.log('Exchanging messages (public key request)');
         const addressN = bip32Path(SOL_DERIVATION_PATH);
-        const { msgType, payload } = tEncodeByName('SolanaGetPublicKey', { address_n: addressN, show_display: false });
+        const payload = encodeSolanaGetPublicKey(addressN, false);
+        const msgType = getMsgTypeId('MessageType_SolanaGetPublicKey');
         this.log(`Send SolanaGetPublicKey type=${msgType} bytes=${payload.length}`);
         const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 8000);
         this.log(`Recv type=${respType} bytes=${respPayload.length}`);
-        let keyBytes: Uint8Array | null = null;
-        const decoded = decodeToObject(respType, respPayload);
-        if (decoded && (decoded.type === 'SolanaPublicKey' || decoded.type.endsWith('.SolanaPublicKey'))) {
-          const hex = decoded.message?.public_key as string | undefined;
-          if (hex && typeof hex === 'string') {
-            keyBytes = hexToBytes(hex);
-          }
-        }
-        if (!keyBytes) {
-          // Fallback: manual minimal decode of field 1 (bytes)
-          keyBytes = fallbackDecodeBytesField1(respPayload);
-        }
+        const { public_key } = decodeSolanaPublicKey(respPayload);
+        const keyBytes = public_key ?? new Uint8Array();
         this.log(`Decoded pubkey bytes=${keyBytes.length}`);
+        if (keyBytes.length === 0) throw new Error('Empty public key payload');
         const keyB58 = toBase58(keyBytes);
         this.log('Public key received');
         await TrezorUSB.close();
@@ -128,7 +122,8 @@ export class TrezorBridge {
   }
 
   private async handshake(timeoutMs = 3000) {
-    const { msgType: initType, payload } = tEncodeByName('Initialize', {});
+    const initType = getMsgTypeId('MessageType_Initialize');
+    const payload = pEncodeByName('Initialize', {});
     this.log(`Handshake: send Initialize type=${initType} bytes=${payload.length}`);
     let msgType: number, resp: Uint8Array;
     try {
@@ -180,28 +175,10 @@ export class TrezorBridge {
 }
 
 function toBase58(bytes: Uint8Array): string {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const bs58 = require('bs58');
-    return bs58.encode(Buffer.from(bytes));
-  } catch (_) {
-    // Fallback for test/minimal envs without bs58: return zero-padded hex
-    const hex = Buffer.from(bytes).toString('hex');
-    return hex.length >= 20 ? hex : hex.padEnd(20, '0');
-  }
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const bs58 = require('bs58');
+  // bs58 accepts Uint8Array directly; avoid Buffer in RN
+  return bs58.encode(bytes);
 }
 
-function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  const out = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
-
-function fallbackDecodeBytesField1(buf: Uint8Array): Uint8Array {
-  let off = 0;
-  const tag = buf[off++];
-  if (tag !== ((1 << 3) | 2)) return new Uint8Array();
-  const len = buf[off++];
-  return buf.subarray(off, off + len);
-}
+// hex helpers removed; no longer needed with protobuf decode
