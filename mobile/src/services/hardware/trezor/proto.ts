@@ -1,4 +1,4 @@
-import * as protobuf from 'protobufjs/minimal';
+import * as protobuf from 'protobufjs';
 
 let root: protobuf.Root | null = null;
 

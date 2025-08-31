@@ -1,5 +1,9 @@
 import { TrezorBridge } from '../src/services/hardware/TrezorBridge';
-import * as wire from '../src/services/hardware/trezor/wire';
+// Ensure Platform is Android for this test environment
+jest.mock('react-native', () => ({
+  ...jest.requireActual('react-native'),
+  Platform: { ...jest.requireActual('react-native').Platform, OS: 'android' },
+}));
 import { encodeSolanaGetPublicKey } from '../src/services/hardware/trezor/proto';
 
 // Mock native USB module
@@ -13,6 +17,7 @@ jest.mock('../src/native/TrezorUSB', () => {
       async ensurePermission() { return; },
       async open() { return; },
       async exchange(bytes: number[], _timeout: number) {
+        const wire = jest.requireActual('../src/services/hardware/trezor/wire');
         if (bytes.length > 0) {
           // If request sent, enqueue a proper framed response
           // First call will be Initialize → Features
