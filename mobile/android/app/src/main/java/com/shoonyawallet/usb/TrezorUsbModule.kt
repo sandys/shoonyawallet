@@ -83,7 +83,12 @@ class TrezorUsbModule(private val reactContext: ReactApplicationContext) : React
                 }
             }
         }
-        reactContext.registerReceiver(receiver, filter)
+        // Android 14 requires specifying exportedness when registering receivers.
+        if (Build.VERSION.SDK_INT >= 33) {
+            reactContext.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            reactContext.registerReceiver(receiver, filter)
+        }
         addLog("Requesting USB permission for vid=$vendorId pid=$productId")
         usbManager.requestPermission(dev, permissionIntent)
     }
