@@ -6,15 +6,7 @@ import { setTransportMode, setHIDReportMode, encodeFrame, encodeFromEncoded, dec
 import { Messages, parseConfigure, encodeMessage as pbEncodeMessage, decodeMessage as pbDecodeMessage, loadDefinitions } from '@trezor/protobuf';
 const MESSAGES = parseConfigure(Messages);
 
-type TransportPkg = any;
-let trezorTransport: TransportPkg | null = null;
 let trezorProtocol: any = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  trezorTransport = require('@trezor/transport');
-} catch (_) {
-  trezorTransport = null;
-}
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   trezorProtocol = require('@trezor/protocol');
