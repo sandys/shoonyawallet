@@ -132,25 +132,32 @@ export class TrezorBridge {
     this.log(`Handshake: send Initialize type=${initType} bytes=${payload.length}`);
     let msgType: number, resp: Uint8Array;
     try {
-      const res = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
-      msgType = res.msgType; resp = res.payload;
-    } catch (e) {
-      if (this.isHid) {
-        this.log('Handshake failed on first attempt; retrying with leadingZero HID report mode');
-        setHIDReportMode('leadingZero');
-        const res2 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
-        msgType = res2.msgType; resp = res2.payload;
-      } else {
-        // Vendor iface: retry once in-session after a short delay without changing framing
-        this.log('Handshake read timeout; retrying in-session (vendor iface)');
-        await this.simulateDelay(250);
-        const res3 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
-        msgType = res3.msgType; resp = res3.payload;
+      try {
+        const res = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
+        msgType = res.msgType; resp = res.payload;
+      } catch (e) {
+        if (this.isHid) {
+          this.log('Handshake failed on first attempt; retrying with leadingZero HID report mode');
+          setHIDReportMode('leadingZero');
+          const res2 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
+          msgType = res2.msgType; resp = res2.payload;
+        } else {
+          // Vendor iface: retry once in-session after a short delay without changing framing
+          this.log('Handshake read timeout; retrying in-session (vendor iface)');
+          await this.simulateDelay(250);
+          const res3 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
+          msgType = res3.msgType; resp = res3.payload;
+        }
       }
+      this.log(`Handshake: recv type=${msgType} bytes=${resp.length}`);
+      // Try decode to ensure it's a valid response; tolerate Success/Features/etc.
+      try { decodeToObject(msgType, resp); } catch {}
+      this.log('Handshake OK');
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      this.log(`Handshake FAILED: ${msg}`);
+      throw e;
     }
-    this.log(`Handshake: recv type=${msgType} bytes=${resp.length}`);
-    // Try decode to ensure it's a valid response; tolerate Success/Features/etc.
-    try { decodeToObject(msgType, resp); } catch {}
   }
 
   private async waitForDevicePresence(maxWaitMs: number, pollMs: number, requiredConsecutive = 1): Promise<boolean> {

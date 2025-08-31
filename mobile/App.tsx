@@ -65,10 +65,15 @@ export default function App() {
       );
       setPubkey(key);
       setPhase('fetching');
+      setLogs((l) => [...l, `${new Date().toISOString().slice(11, 23)} RPC: begin for ${key.slice(0, 6)}…${key.slice(-6)}`]);
       const lamports = await rpc.getBalance(key);
       setLogs((l) => [...l, `${new Date().toISOString().slice(11, 23)} RPC: SOL balance fetched`]);
       setBalance(lamports / 1_000_000_000);
-      const tkns = await rpc.getSplTokenBalances(key);
+      const tkns = await rpc.getSplTokenBalances(key).catch((err) => {
+        const ts = new Date().toISOString().slice(11, 23);
+        setLogs((l) => [...l, `${ts} RPC: token fetch error: ${String(err?.message ?? err)}`]);
+        return [] as typeof tokens;
+      });
       setTokens(tkns);
       // Log a concise token summary
       const summaryTs = new Date().toISOString().slice(11, 23);
@@ -78,6 +83,7 @@ export default function App() {
         const top = tkns.slice(0, 10).map((t) => `${shortMint(t.mint)}=${formatUiAmount(t.uiAmount)}`).join(', ');
         setLogs((l) => [...l, `${summaryTs} Tokens (${tkns.length}): ${top}${tkns.length > 10 ? ', …' : ''}`]);
       }
+      setLogs((l) => [...l, `${new Date().toISOString().slice(11, 23)} RPC: end`]);
       setPhase('done');
     } catch (e: any) {
       const msg = e?.message ?? String(e);
