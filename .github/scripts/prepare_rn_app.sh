@@ -43,6 +43,13 @@ if command -v pod >/dev/null 2>&1; then
   popd
 fi
 
+# 6) Ensure lockfile and node_modules exist (fresh install if needed)
+if [ -f package-lock.json ]; then
+  npm ci || npm install
+else
+  npm install
+fi
+
 popd
 
 echo "Preparation complete. You can now build Android/iOS."
