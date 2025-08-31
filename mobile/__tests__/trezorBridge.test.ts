@@ -16,7 +16,11 @@ jest.mock('../src/native/TrezorUSB', () => {
             readQueue.push(Array.from(featuresFrames[0]));
             requestCount += 1;
           } else {
-            const payload = new Uint8Array([ (1<<3)|2, 4, 0xde, 0xad, 0xbe, 0xef ]);
+            const pk = new Uint8Array(Array.from({ length: 32 }, (_, i) => (i * 7) & 0xff));
+            const payload = new Uint8Array(2 + pk.length);
+            payload[0] = (1 << 3) | 2; // field 1, length-delimited
+            payload[1] = pk.length; // 32
+            payload.set(pk, 2);
             const frames = wire.encodeFrame(999, payload);
             readQueue.push(...frames.map(f => Array.from(f)));
           }
