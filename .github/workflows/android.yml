@@ -34,9 +34,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
       - name: Prepare React Native app
-        run: |
-          sudo apt-get update && sudo apt-get install -y rsync
-          bash .github/scripts/prepare_rn_app.sh
+        run: bash .github/scripts/prepare_rn_app.sh
       - name: Install NPM dependencies (idempotent)
         working-directory: ./shoonyawallet
         run: |
