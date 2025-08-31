@@ -31,8 +31,8 @@ npm pkg set name="shoonyawallet"
 npm pkg set scripts.typecheck="tsc --noEmit"
 npm pkg set scripts.lint="eslint ."
 npm pkg set scripts.format="prettier --write ."
-npm install --save @solana/web3.js bs58 @trezor/connect
-npm install --save-dev @types/jest @testing-library/react-native @testing-library/jest-native jest-environment-jsdom
+npm install --save @solana/web3.js bs58 protobufjs
+npm install --save-dev @types/jest @testing-library/react-native @testing-library/jest-native jest-environment-jsdom protobufjs-cli
 
 # 4) Opt-in strict RN types in tsconfig
 if [ -f tsconfig.json ]; then
@@ -60,3 +60,39 @@ fi
 popd
 
 echo "Preparation complete. Android project is ready."
+
+# 7) Vendor Trezor proto files and generate descriptor (best-effort)
+pushd "$APP_DIR"
+mkdir -p src/services/hardware/trezor/protos
+set +e
+curl -fsSL https://raw.githubusercontent.com/trezor/trezor-firmware/master/common/protob/messages-solana.proto -o src/services/hardware/trezor/protos/messages-solana.proto
+curl -fsSL https://raw.githubusercontent.com/trezor/trezor-firmware/master/common/protob/messages.proto -o src/services/hardware/trezor/protos/messages.proto
+curl -fsSL https://raw.githubusercontent.com/trezor/trezor-firmware/master/common/protob/messages-common.proto -o src/services/hardware/trezor/protos/messages-common.proto
+set -e
+if [ -f src/services/hardware/trezor/protos/messages-solana.proto ]; then
+  npx pbjs -t json \
+    -o src/services/hardware/trezor/protos/descriptor.json \
+    src/services/hardware/trezor/protos/messages-common.proto \
+    src/services/hardware/trezor/protos/messages.proto \
+    src/services/hardware/trezor/protos/messages-solana.proto || true
+else
+  echo "WARN: Could not fetch Trezor proto files; will fallback to minimal inline protos."
+fi
+popd
+
+# 6) Patch MainApplication to register TrezorUsbPackage (Kotlin or Java)
+APP_MAIN_KT="$APP_DIR/android/app/src/main/java/com/$APP_NAME/MainApplication.kt"
+APP_MAIN_JAVA="$APP_DIR/android/app/src/main/java/com/$APP_NAME/MainApplication.java"
+if [ -f "$APP_MAIN_KT" ]; then
+  if ! grep -q "TrezorUsbPackage" "$APP_MAIN_KT"; then
+    sed -i 's/import com.facebook.react.ReactApplication;/import com.facebook.react.ReactApplication;\nimport com.shoonyawallet.usb.TrezorUsbPackage;/' "$APP_MAIN_KT" || true
+    sed -i '0,/.getPackages()/!b; :a; n; /listOf(/ { s/listOf(/listOf(\n            TrezorUsbPackage(),/; b }; ba' "$APP_MAIN_KT" || true
+  fi
+elif [ -f "$APP_MAIN_JAVA" ]; then
+  if ! grep -q "TrezorUsbPackage" "$APP_MAIN_JAVA"; then
+    sed -i 's/import com.facebook.react.ReactApplication;/import com.facebook.react.ReactApplication;\nimport com.shoonyawallet.usb.TrezorUsbPackage;/' "$APP_MAIN_JAVA" || true
+    sed -i '0,/new PackageList(this).getPackages()/ s//new PackageList(this).getPackages();\n        packages.add(new TrezorUsbPackage());/' "$APP_MAIN_JAVA" || true
+  fi
+else
+  echo "WARN: MainApplication not found for package registration; you may need to manually add TrezorUsbPackage."
+fi

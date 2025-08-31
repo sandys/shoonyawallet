@@ -1,9 +1,9 @@
 import { Platform } from 'react-native';
-import TrezorConnect, { DEVICE_EVENT, UI_EVENT } from '@trezor/connect';
-import type { UiRequest } from '@trezor/connect/lib/events/ui';
-import type { Device } from '@trezor/connect/lib/types/trezor';
 import { SOL_DERIVATION_PATH } from './paths';
 import { classifyTrezorError } from './errors';
+import { TrezorUSB } from '../../native/TrezorUSB';
+import { encodeFrame, decodeFrames, sendAndReceive } from './trezor/wire';
+import { bip32Path, encodeSolanaGetPublicKey, decodeSolanaPublicKey, getMsgTypeId, encodeByName, decodeByName } from './trezor/proto';
 
 export type ProgressCallback = (message: string) => void;
 
@@ -28,45 +28,32 @@ export class TrezorBridge {
       throw new Error('USB Trezor not supported on iOS');
     }
 
-    this.log('Initializing Trezor Connect...');
-    try {
-      await TrezorConnect.init({
-        manifest: {
-          email: 'dev@shoonyawallet.org',
-          appUrl: 'https://github.com/yourorg/shoonyawallet',
-        },
-      });
-    } catch (e) {
-      this.log('TrezorConnect init failed, will still retry');
-    }
-
-    // Subscriptions (logging only; app is single-device for MVP)
-    TrezorConnect.on(DEVICE_EVENT, (ev) => {
-      const dev = (ev?.payload as Device | undefined)?.label ?? 'device';
-      this.log(`Device event: ${ev.type} (${dev})`);
-    });
-    TrezorConnect.on(UI_EVENT, (ev: any) => {
-      const r = (ev?.payload as UiRequest | undefined)?.type ?? ev.type;
-      this.log(`UI event: ${r}`);
-    });
+    this.log('Preparing native USB transport (no browser)…');
 
     let lastErr: unknown = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        this.log(`Attempt ${attempt}/${maxAttempts}: request Solana public key`);
-        // Optional preflight; helps surface permission prompts early on some devices
-        try { await (TrezorConnect as any).getFeatures?.(); } catch {}
-        const res = await TrezorConnect.solanaGetPublicKey({
-          path: SOL_DERIVATION_PATH,
-          showOnTrezor: false,
-        });
-        if (!res.success) {
-          throw new Error(res.payload?.error ?? 'Unknown trezor error');
-        }
-        const key = res.payload?.publicKey as string;
-        if (!key) throw new Error('Empty public key from device');
+        this.log(`Attempt ${attempt}/${maxAttempts}: locate device`);
+        if (!TrezorUSB.isSupported()) throw new Error('Native USB not supported');
+        const devices = await TrezorUSB.list();
+        if (!devices.length) throw new Error('No Trezor device found');
+        const dev = devices[0];
+        this.log('Requesting USB permission');
+        await TrezorUSB.ensurePermission(dev);
+        this.log('Opening USB session');
+        await TrezorUSB.open(dev);
+        this.log('Handshake (Initialize → Features)');
+        await this.handshake();
+        this.log('Exchanging messages (public key request)');
+        const addressN = bip32Path(SOL_DERIVATION_PATH);
+        const payload = encodeSolanaGetPublicKey(addressN, false);
+        const msgType = getMsgTypeId('MessageType_SolanaGetPublicKey');
+        const { payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 3000);
+        const { public_key } = decodeSolanaPublicKey(respPayload);
+        const keyB58 = toBase58(public_key);
         this.log('Public key received');
-        return key;
+        await TrezorUSB.close();
+        return keyB58;
       } catch (e) {
         lastErr = e;
         const msg = e instanceof Error ? e.message : String(e);
@@ -88,4 +75,30 @@ export class TrezorBridge {
   private async simulateDelay(ms: number) {
     return new Promise((res) => setTimeout(res, ms));
   }
+
+  private async handshake() {
+    const initType = getMsgTypeId('MessageType_Initialize');
+    const featuresType = getMsgTypeId('MessageType_Features');
+    const payload = encodeByName('Initialize', {});
+    const frames = encodeFrame(initType, payload);
+    // Send request frames
+    for (const f of frames) {
+      await TrezorUSB.exchange(Array.from(f), 2000);
+    }
+    // Read a single response frame (temporary — replace with loop until full)
+    const respFrame = await TrezorUSB.exchange([], 2000);
+    const { msgType, payload: resp } = decodeFrames([new Uint8Array(respFrame)]);
+    if (msgType !== featuresType) {
+      // Some devices answer with Success or different wrapper; try decode to detect
+      try { decodeByName('Features', resp); }
+      catch { throw new Error('Handshake failed: unexpected response'); }
+    }
+  }
+}
+
+function toBase58(bytes: Uint8Array): string {
+  // lightweight base58 encode using bs58 from node_modules
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const bs58 = require('bs58');
+  return bs58.encode(Buffer.from(bytes));
 }
