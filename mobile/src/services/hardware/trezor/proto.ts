@@ -31,9 +31,21 @@ function loadRoot(): any {
 export function encodeSolanaGetPublicKey(addressN: number[], showDisplay: boolean): Uint8Array {
   const r = loadRoot();
   if (descriptorLoaded) {
-    const Type = r.lookupType('trezor.solana.SolanaGetPublicKey') || r.lookupType('hw.trezor.messages.solana.SolanaGetPublicKey');
-    const msg = (Type as any).create({ address_n: addressN, show_display: showDisplay });
-    return (Type as any).encode(msg).finish();
+    try {
+      // Prefer fully-qualified name; fall back to alternative package if needed
+      let Type: any = null;
+      try { Type = (r as any).lookupType('hw.trezor.messages.solana.SolanaGetPublicKey'); } catch {}
+      if (!Type) {
+        try { Type = (r as any).lookupType('trezor.solana.SolanaGetPublicKey'); } catch {}
+      }
+      if (Type && Type.create && Type.encode) {
+        const msg = Type.create({ address_n: addressN, show_display: showDisplay });
+        const buf: Uint8Array = Type.encode(msg).finish();
+        if (buf && buf.byteLength > 0) return buf;
+      }
+    } catch (_) {
+      // fall back to manual encoding
+    }
   }
   // Manual minimal encoding: field 1 (address_n) repeated varint, field 2 (bool)
   const out: number[] = [];
