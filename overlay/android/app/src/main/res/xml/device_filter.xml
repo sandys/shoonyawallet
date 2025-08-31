@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Common Trezor vendor/product IDs (extend as needed) -->
-    <usb-device vendor-id="4617" />
-    <usb-device vendor-id="21324" />
-</resources>
-

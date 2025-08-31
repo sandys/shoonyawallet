@@ -7,7 +7,7 @@ on:
     branches: [ main, master ]
 
 jobs:
-  build-android:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,7 +15,38 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-          cache-dependency-path: 'shoonyawallet/package-lock.json'
+          cache-dependency-path: 'mobile/package-lock.json'
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: mobile/node_modules
+          key: ${{ runner.os }}-modules-${{ hashFiles('mobile/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-modules-
+      - name: Install NPM dependencies
+        working-directory: ./mobile
+        run: npm ci
+      - name: Run tests (Jest)
+        working-directory: ./mobile
+        run: npm test -- --ci --reporters=default --watchAll=false
+
+  build-android:
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'mobile/package-lock.json'
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: mobile/node_modules
+          key: ${{ runner.os }}-modules-${{ hashFiles('mobile/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-modules-
       - name: Install Java
         uses: actions/setup-java@v4
         with:
@@ -32,21 +63,33 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
-      - name: Prepare React Native app
-        run: bash .github/scripts/prepare_rn_app.sh
       - name: Cache NPM (tarballs)
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: ${{ runner.os }}-npm-${{ hashFiles('shoonyawallet/package-lock.json') }}
+          key: ${{ runner.os }}-npm-${{ hashFiles('mobile/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-npm-
-      - name: Install NPM dependencies (idempotent)
-        working-directory: ./shoonyawallet
+      - name: Install NPM dependencies
+        working-directory: ./mobile
+        run: npm ci
+      - name: Vendor Trezor protos and generate descriptor
+        working-directory: ./mobile
         run: |
-          if [ -f package-lock.json ]; then npm ci || npm install; else npm install; fi
+          mkdir -p src/services/hardware/trezor/protos
+          curl -fsSL https://raw.githubusercontent.com/trezor/trezor-firmware/master/common/protob/messages-solana.proto -o src/services/hardware/trezor/protos/messages-solana.proto || true
+          curl -fsSL https://raw.githubusercontent.com/trezor/trezor-firmware/master/common/protob/messages.proto -o src/services/hardware/trezor/protos/messages.proto || true
+          curl -fsSL https://raw.githubusercontent.com/trezor/trezor-firmware/master/common/protob/messages-common.proto -o src/services/hardware/trezor/protos/messages-common.proto || true
+          if [ -f src/services/hardware/trezor/protos/messages-solana.proto ]; then \
+            npx pbjs -t json -o src/services/hardware/trezor/protos/descriptor.json \
+              src/services/hardware/trezor/protos/messages-common.proto \
+              src/services/hardware/trezor/protos/messages.proto \
+              src/services/hardware/trezor/protos/messages-solana.proto; \
+          else \
+            echo "Skipping descriptor generation (protos unavailable)"; \
+          fi
       - name: Pre-bundle JS into assets
-        working-directory: ./shoonyawallet
+        working-directory: ./mobile
         run: |
           mkdir -p android/app/src/main/assets android/app/src/main/res
           npx react-native bundle \
@@ -56,7 +99,7 @@ jobs:
             --bundle-output android/app/src/main/assets/index.android.bundle \
             --assets-dest android/app/src/main/res
       - name: Build Debug APK
-        working-directory: ./shoonyawallet
+        working-directory: ./mobile
         run: |
           chmod +x android/gradlew || true
           cd android
@@ -65,5 +108,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-debug.apk
-          path: shoonyawallet/android/app/build/outputs/apk/debug/app-debug.apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
           compression-level: 0
