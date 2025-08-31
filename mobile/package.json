@@ -19,7 +19,7 @@
     "@solana/web3.js": "^1.95.0",
     "bs58": "^5.0.0",
     "protobufjs": "^7.2.6",
-    "@trezor/transport": "^2.0.0",
+    "@trezor/transport": "^1.5.2",
     "@trezor/protocol": "^1.2.8",
     "@trezor/protobuf": "^1.4.2"
   },
