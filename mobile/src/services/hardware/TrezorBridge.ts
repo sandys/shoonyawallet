@@ -16,6 +16,7 @@ type ConnectOptions = {
   // Optional: wait for device presence before attempting connection
   waitForPresenceMs?: number; // total time to wait for device appearance
   presencePollMs?: number; // poll interval for listDevices
+  presenceStableCount?: number; // require N consecutive polls reporting present
 };
 
 export class TrezorBridge {
@@ -27,7 +28,7 @@ export class TrezorBridge {
   }
 
   async connectAndGetPublicKey(opts: ConnectOptions = {}): Promise<string> {
-    const { maxAttempts = 6, attemptDelayMs = 1000, backoff = 'exponential', maxDelayMs = 8000, waitForPresenceMs = 15000, presencePollMs = 500 } = opts;
+    const { maxAttempts = 6, attemptDelayMs = 1000, backoff = 'exponential', maxDelayMs = 8000, waitForPresenceMs = 15000, presencePollMs = 500, presenceStableCount = 2 } = opts;
 
     const isJest = typeof process !== 'undefined' && !!(process as any).env?.JEST_WORKER_ID;
     if (Platform.OS === 'ios' && !isJest) {
@@ -38,9 +39,12 @@ export class TrezorBridge {
 
     // Pre-wait gating: if no device is present, poll until one appears (up to waitForPresenceMs)
     try {
-      const present = await this.waitForDevicePresence(waitForPresenceMs, presencePollMs);
+      const present = await this.waitForDevicePresence(waitForPresenceMs, presencePollMs, presenceStableCount);
       if (!present) {
         this.log('No device detected during presence wait');
+      } else {
+        this.log(`Device presence confirmed (${presenceStableCount} polls); debouncing 500ms`);
+        await this.simulateDelay(500);
       }
     } catch {}
 
@@ -52,11 +56,12 @@ export class TrezorBridge {
         let devices = await TrezorUSB.list();
         if (!devices.length) {
           // If device not present at this exact moment, briefly poll before failing this attempt
-          await this.waitForDevicePresence(2000, Math.min(250, presencePollMs));
+          await this.waitForDevicePresence(2000, Math.min(250, presencePollMs), 1);
           devices = await TrezorUSB.list();
           if (!devices.length) throw new Error('No Trezor device found');
         }
         const dev = devices[0];
+        this.log(`Selecting device vid=${dev.vendorId} pid=${dev.productId} name=${dev.deviceName ?? '-'} for attempt ${attempt}`);
         this.log('Requesting USB permission');
         await TrezorUSB.ensurePermission(dev);
         this.log('Opening USB session');
@@ -148,12 +153,18 @@ export class TrezorBridge {
     try { decodeToObject(msgType, resp); } catch {}
   }
 
-  private async waitForDevicePresence(maxWaitMs: number, pollMs: number): Promise<boolean> {
+  private async waitForDevicePresence(maxWaitMs: number, pollMs: number, requiredConsecutive = 1): Promise<boolean> {
     const start = Date.now();
+    let consecutive = 0;
     while (Date.now() - start < maxWaitMs) {
       try {
         const devices = await TrezorUSB.list();
-        if (devices && devices.length) return true;
+        if (devices && devices.length) {
+          consecutive += 1;
+          if (consecutive >= requiredConsecutive) return true;
+        } else {
+          consecutive = 0;
+        }
       } catch {}
       await this.simulateDelay(pollMs);
     }

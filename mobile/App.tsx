@@ -66,6 +66,7 @@ export default function App() {
       setPubkey(key);
       setPhase('fetching');
       const lamports = await rpc.getBalance(key);
+      setLogs((l) => [...l, `${new Date().toISOString().slice(11, 23)} RPC: SOL balance fetched`]);
       setBalance(lamports / 1_000_000_000);
       const tkns = await rpc.getSplTokenBalances(key);
       setTokens(tkns);
