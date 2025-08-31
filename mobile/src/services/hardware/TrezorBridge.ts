@@ -24,7 +24,7 @@ export class TrezorBridge {
   }
 
   async connectAndGetPublicKey(opts: ConnectOptions = {}): Promise<string> {
-    const { maxAttempts = 3, attemptDelayMs = 800, backoff = 'linear', maxDelayMs = 5000 } = opts;
+    const { maxAttempts = 6, attemptDelayMs = 1000, backoff = 'exponential', maxDelayMs = 8000 } = opts;
 
     const isJest = typeof process !== 'undefined' && !!(process as any).env?.JEST_WORKER_ID;
     if (Platform.OS === 'ios' && !isJest) {
@@ -88,6 +88,7 @@ export class TrezorBridge {
         const msg = e instanceof Error ? e.message : String(e);
         const cls = classifyTrezorError(msg);
         this.log(`Attempt failed: ${msg} [${cls.code}]`);
+        try { await TrezorUSB.close(); } catch {}
         if (!cls.retryable) break;
         if (attempt < maxAttempts) {
           const delay = backoff === 'exponential'
@@ -119,7 +120,11 @@ export class TrezorBridge {
         const res2 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
         msgType = res2.msgType; resp = res2.payload;
       } else {
-        throw e;
+        // Vendor iface: retry once in-session after a short delay without changing framing
+        this.log('Handshake read timeout; retrying in-session (vendor iface)');
+        await this.simulateDelay(250);
+        const res3 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
+        msgType = res3.msgType; resp = res3.payload;
       }
     }
     this.log(`Handshake: recv type=${msgType} bytes=${resp.length}`);

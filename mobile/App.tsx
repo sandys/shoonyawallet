@@ -147,7 +147,21 @@ in=0x${Number(transportInfo.inEndpointAddress ?? 0).toString(16)} mps=${transpor
             try {
               // Merge app logs with native logs (if any) at copy time
               const native = await TrezorUSB.getDebugLog().catch(() => [] as string[]);
-              const merged = [...logs, ...(Array.isArray(native) ? native : [])];
+              const diagHeader: string[] = [];
+              const diag = transportDiag || 'protocol=v1';
+              diagHeader.push(`Transport: ${diag}`);
+              if (transportInfo) {
+                const c = transportInfo.interfaceClass ?? '-';
+                const s = transportInfo.interfaceSubclass ?? '-';
+                const p = transportInfo.interfaceProtocol ?? '-';
+                const inAddr = Number(transportInfo.inEndpointAddress ?? 0).toString(16);
+                const outAddr = Number(transportInfo.outEndpointAddress ?? 0).toString(16);
+                const inMps = transportInfo.inMaxPacketSize ?? '-';
+                const outMps = transportInfo.outMaxPacketSize ?? '-';
+                diagHeader.push(`Iface: class=${c} subclass=${s} proto=${p}`);
+                diagHeader.push(`EPs: in=0x${inAddr} mps=${inMps} out=0x${outAddr} mps=${outMps}`);
+              }
+              const merged = [...diagHeader, ...logs, ...(Array.isArray(native) ? native : [])];
               Clipboard.setString(merged.join('\n'));
               const ts = new Date().toISOString().slice(11, 23);
               setLogs((l) => [...l, `${ts} Copied ${merged.length} lines (app+native) to clipboard`]);
