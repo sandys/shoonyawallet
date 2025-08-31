@@ -97,20 +97,24 @@ export async function sendAndReceive(
   let header: { msgType: number; payloadLen: number; headerLen: number } | null = null;
   const started = Date.now();
   while (Date.now() - started < timeoutMs + 50) {
-    const part = await exchange([], Math.max(1, timeoutMs - (Date.now() - started)));
-    if (part && part.length) {
-      received.push(new Uint8Array(part));
-      const merged = concat(received);
-      header = header || tryParseHeader(merged);
-      if (header) {
-        const avail = Math.max(0, merged.length - header.headerLen);
-        if (avail >= header.payloadLen) {
-          const payloadBuf = merged.subarray(header.headerLen, header.headerLen + header.payloadLen);
-          return { msgType: header.msgType, payload: payloadBuf };
+    const remain = Math.max(1, timeoutMs - (Date.now() - started));
+    try {
+      const part = await exchange([], remain);
+      if (part && part.length) {
+        received.push(new Uint8Array(part));
+        const merged = concat(received);
+        header = header || tryParseHeader(merged);
+        if (header) {
+          const avail = Math.max(0, merged.length - header.headerLen);
+          if (avail >= header.payloadLen) {
+            const payloadBuf = merged.subarray(header.headerLen, header.headerLen + header.payloadLen);
+            return { msgType: header.msgType, payload: payloadBuf };
+          }
         }
       }
-    } else {
-      // no data; spin until timeout
+    } catch (_) {
+      // READ_FAIL or transient error: wait briefly and keep polling until overall timeout
+      await new Promise((r) => setTimeout(r, 50));
     }
   }
   const merged = concat(received);
