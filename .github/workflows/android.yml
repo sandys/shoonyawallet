@@ -1,0 +1,39 @@
+name: Android CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Prepare React Native app
+        run: |
+          sudo apt-get update && sudo apt-get install -y rsync
+          bash .github/scripts/prepare_rn_app.sh
+      - name: Install Android SDK tools
+        uses: android-actions/setup-android@v3
+      - name: Build Debug APK
+        working-directory: ./shoonyawallet
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: shoonyawallet/android/app/build/outputs/apk/debug/*.apk
+
