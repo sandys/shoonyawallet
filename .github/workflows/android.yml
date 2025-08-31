@@ -30,7 +30,11 @@ jobs:
       - name: Install NPM dependencies
         working-directory: ./mobile
         run: |
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          if [ -f package-lock.json ]; then \
+            npm ci || (echo "npm ci failed; falling back to npm install" && npm install); \
+          else \
+            npm install; \
+          fi
       - name: Run tests (Jest)
         working-directory: ./mobile
         run: npm test -- --ci --reporters=default --watchAll=false
@@ -82,7 +86,11 @@ jobs:
       - name: Install NPM dependencies
         working-directory: ./mobile
         run: |
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          if [ -f package-lock.json ]; then \
+            npm ci || (echo "npm ci failed; falling back to npm install" && npm install); \
+          else \
+            npm install; \
+          fi
       - name: Vendor Trezor protos and generate descriptor
         working-directory: ./mobile
         run: |
