@@ -57,11 +57,3 @@ jobs:
           name: app-debug.apk
           path: shoonyawallet/android/app/build/outputs/apk/debug/app-debug.apk
           compression-level: 0
-      - name: Upload APK to Release (main only)
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: android-debug-${{ github.run_number }}
-          name: Android Debug ${{ github.run_number }}
-          files: shoonyawallet/android/app/build/outputs/apk/debug/app-debug.apk
-          prerelease: true
