@@ -105,10 +105,18 @@ export class TrezorBridge {
           const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 8000);
           this.log(`Recv type=${respType} bytes=${respPayload.length}`);
           if (respType === TrezorBridge.MSG.PASSPHRASE_REQUEST) {
-            // Try empty passphrase first (standard wallet). If user actually uses hidden wallets, device will ask again or fail.
-            const empty = encodePassphraseAckHost("");
-            this.log('Passphrase requested; sending empty host passphrase for standard wallet');
-            await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, empty, 8000);
+            // Prompt user to enter passphrase on host (Safe 3 has no keyboard). Empty means standard wallet.
+            if (this.getPassphrase) {
+              this.log('Passphrase requested; prompting user for host entry');
+              const pw = await this.getPassphrase();
+              if (pw == null) throw new Error('Passphrase entry cancelled');
+              const ack = encodePassphraseAckHost(pw);
+              await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, ack, 8000);
+            } else {
+              this.log('Passphrase requested; no provider available, sending empty for standard wallet');
+              const empty = encodePassphraseAckHost("");
+              await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, empty, 8000);
+            }
             continue;
           }
           if (respType === TrezorBridge.MSG.BUTTON_REQUEST) {
