@@ -82,9 +82,22 @@ export async function sendAndReceive(
   }
 }
 
-export function createMessage(messageName: string, messageData: Record<string, unknown>): { messageType: number; payload: Uint8Array } {
-  const { messageType, message } = encodeMessage(MESSAGES, messageName, messageData);
-  return { messageType, payload: new Uint8Array(message) };
+export function encodeByName(name: string, data: any): { msgType: number; payload: Uint8Array } {
+  try {
+    const { messageType, message } = encodeMessage(MESSAGES, name, data);
+    return { msgType: messageType as number, payload: new Uint8Array(message) };
+  } catch (_) {
+    return { msgType: 0, payload: new Uint8Array() };
+  }
+}
+
+export function decodeToObject(msgType: number, payload: Uint8Array): { type: string; message: any } | null {
+  try {
+    const { type, message } = decodeMessage(MESSAGES, msgType, toNodeBuffer(payload));
+    return { type, message };
+  } catch (_) {
+    return null;
+  }
 }
 
 export { MESSAGES };
