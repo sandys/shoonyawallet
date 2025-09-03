@@ -5,15 +5,19 @@ import * as protocol from '@trezor/protocol';
 
 const MESSAGES = parseConfigure(Messages);
 
-// Load Solana message definitions if available
+// Load Trezor message definitions from generated descriptor
 try {
   const descriptor = require('./protos/descriptor.json');
   const messagesPkg = descriptor?.nested?.hw?.nested?.trezor?.nested?.messages;
   if (messagesPkg) {
+    console.log('Loading Trezor message definitions...');
     loadDefinitions(MESSAGES, 'hw.trezor.messages', async () => messagesPkg);
+    console.log('Loaded message definitions');
+  } else {
+    console.log('No message definitions found in descriptor');
   }
-} catch (_) {
-  // ignore; definitions may not be generated at test-time
+} catch (e) {
+  console.log('Failed to load message definitions:', e);
 }
 
 function toNodeBuffer(u8: Uint8Array): Buffer {

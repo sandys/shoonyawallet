@@ -3,8 +3,11 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "android": "react-native run-android",
-    "ios": "react-native run-ios",
+    "prebuild": "npm run gen:trezor-descriptor",
+    "prestart": "npm run gen:trezor-descriptor",
+    "pretest": "npm run gen:trezor-descriptor",
+    "android": "npm run gen:trezor-descriptor && react-native run-android",
+    "ios": "npm run gen:trezor-descriptor && react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
