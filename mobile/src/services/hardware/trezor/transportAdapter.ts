@@ -64,20 +64,24 @@ export function decodeMessage(frames: Uint8Array[]): { msgType: number; payload:
 type ExchangeFn = (bytes: number[], timeout: number) => Promise<number[]>;
 
 function tryParseHeader(buf: Uint8Array): { msgType: number; payloadLen: number; headerLen: number } | null {
-  try {
-    const d = trezorProtocol.v1.decode(toNodeBuffer(buf));
-    if (d && typeof d.messageType === 'number' && typeof d.length === 'number') {
-      return { msgType: d.messageType >>> 0, payloadLen: d.length >>> 0, headerLen: 9 };
-    }
-  } catch (_) {}
-  // Also attempt manual parse of the header for streaming assembly; this is not a package fallback,
-  // it is just parsing of the v1 header already chosen above.
+  // Always try manual parsing first since it's more reliable in React Native
   if (buf.length >= 1 && buf[0] === 0x00) buf = buf.subarray(1);
   if (buf.length >= 9 && buf[0] === 0x3f && buf[1] === 0x23 && buf[2] === 0x23) {
     const type = (buf[3] << 8) | buf[4];
     const len = (buf[5] << 24) | (buf[6] << 16) | (buf[7] << 8) | buf[8];
     return { msgType: type >>> 0, payloadLen: len >>> 0, headerLen: 9 };
   }
+  
+  // Fallback to protocol library
+  try {
+    const d = trezorProtocol.v1.decode(toNodeBuffer(buf));
+    if (d && typeof d.messageType === 'number' && typeof d.length === 'number') {
+      return { msgType: d.messageType >>> 0, payloadLen: d.length >>> 0, headerLen: 9 };
+    }
+  } catch (_) {
+    // Protocol parse failed, manual parse already tried above
+  }
+  
   return null;
 }
 
@@ -101,6 +105,7 @@ export async function sendAndReceive(
       if (part && part.length) {
         received.push(new Uint8Array(part));
         const merged = concat(received);
+        
         header = header || tryParseHeader(merged);
         if (header) {
           const avail = Math.max(0, merged.length - header.headerLen);

@@ -103,18 +103,28 @@ export class TrezorBridge {
         while (guard++ < 6 && !keyB58) {
           const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 8000);
           this.log(`Recv type=${respType} bytes=${respPayload.length}`);
+          
+          // Debug: show raw payload bytes for analysis
+          if (respPayload.length > 0) {
+            const hex = Array.from(respPayload.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+            this.log(`Raw payload: ${hex}${respPayload.length > 8 ? '...' : ''}`);
+          }
+          
           // If we failed to parse a proper header, do not attempt to decode as SolanaPublicKey.
           if (respType === 0) {
             this.log('Unknown/partial message; waiting for next response');
             continue;
           }
           if (respType === TrezorBridge.MSG.PASSPHRASE_REQUEST) {
+            this.log(`PASSPHRASE_REQUEST detected (type=${respType})`);
             // Trezor Safe 3 and newer models require host-based passphrase entry
             if (!this.getPassphrase) {
+              this.log('ERROR: Passphrase required but no passphrase UI is wired');
               throw new Error('Passphrase required but no passphrase UI is wired');
             }
             this.log('Passphrase requested; prompting user for host entry');
             const pw = await this.getPassphrase();
+            this.log(`Passphrase entry result: ${pw === null ? 'cancelled' : 'provided'}`);
             if (pw == null) throw new Error('Passphrase entry cancelled');
             const ack = encodePassphraseAckHost(pw);
             this.log('Sending PassphraseAck with host entry');
