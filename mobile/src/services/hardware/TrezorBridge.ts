@@ -104,52 +104,67 @@ export class TrezorBridge {
           const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 15000);
           this.log(`Recv type=${respType} bytes=${respPayload.length}`);
           
+          // Try to decode the message using official protobuf decoder
+          try {
+            const decoded = decodeToObject(respType, respPayload);
+            if (decoded) {
+              this.log(`Decoded message type: ${decoded.type}`);
+              
+              // Handle PassphraseRequest using proper message type
+              if (decoded.type === 'PassphraseRequest') {
+                this.log('PASSPHRASE_REQUEST detected via official protobuf decoder');
+                if (!this.getPassphrase) {
+                  throw new Error('Passphrase required but no passphrase UI is wired');
+                }
+                this.log('Passphrase requested; prompting user for host entry');
+                const pw = await this.getPassphrase();
+                if (pw == null) throw new Error('Passphrase entry cancelled');
+                // Use official protobuf encoder for PassphraseAck
+                const { msgType: ackType, payload: ackPayload } = encodeByName('PassphraseAck', {
+                  passphrase: pw,
+                  on_device: false
+                });
+                this.log('Sending PassphraseAck with host entry');
+                await sendOnly(TrezorUSB.exchange, ackType, ackPayload);
+                this.log('PassphraseAck sent, waiting for device response');
+                continue;
+              }
+            }
+          } catch (decodeError) {
+            this.log(`Protobuf decode failed: ${decodeError}`);
+          }
+          
           // Debug: show raw payload bytes for analysis
           if (respPayload.length > 0) {
             const hex = Array.from(respPayload.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ');
             this.log(`Raw payload: ${hex}${respPayload.length > 8 ? '...' : ''}`);
           }
           
-          // If we failed to parse a proper header, check if this might be a missed passphrase request
-          if (respType === 0) {
-            // Try multiple direct reads to catch the passphrase request that native layer sees
-            try {
-              this.log('Zero response - checking for missed passphrase request...');
-              
-              // Try immediate read first (no wait)
-              let rawResponse = await TrezorUSB.exchange([], 100);
-              if (!rawResponse || rawResponse.length === 0) {
-                // Try with longer timeout if immediate read failed
-                this.log('Immediate read empty, trying with 2s timeout...');
-                rawResponse = await TrezorUSB.exchange([], 2000);
-              }
-              
-              if (rawResponse && rawResponse.length >= 5) {
-                const hex = Array.from(rawResponse.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-                this.log(`Direct USB raw bytes: ${hex}${rawResponse.length > 8 ? '...' : ''}`);
-                
-                // Check for passphrase request pattern: 3F 23 23 00 29
-                const isPassphraseReq = rawResponse[0] === 0x3f && rawResponse[1] === 0x23 && 
-                                      rawResponse[2] === 0x23 && rawResponse[3] === 0x00 && rawResponse[4] === 0x29;
-                if (isPassphraseReq) {
-                  this.log('Direct USB read confirmed PASSPHRASE_REQUEST pattern');
-                  if (!this.getPassphrase) {
-                    throw new Error('Passphrase required but no passphrase UI is wired');
-                  }
-                  this.log('Passphrase requested; prompting user for host entry');
-                  const pw = await this.getPassphrase();
-                  if (pw == null) throw new Error('Passphrase entry cancelled');
-                  const ack = encodePassphraseAckHost(pw);
-                  this.log('Sending PassphraseAck with host entry');
-                  await sendOnly(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, ack);
-                  this.log('PassphraseAck sent, waiting for device response');
-                  continue;
+          // Check if we got payload but failed to parse type (likely parsing issue)
+          if (respType === 0 && respPayload.length > 0) {
+            this.log(`Parsing failed for ${respPayload.length} byte response - checking for PASSPHRASE_REQUEST pattern`);
+            // Check first 5 bytes for passphrase request pattern: 3F 23 23 00 29
+            if (respPayload.length >= 5) {
+              const isPassphraseReq = respPayload[0] === 0x3f && respPayload[1] === 0x23 && 
+                                    respPayload[2] === 0x23 && respPayload[3] === 0x00 && respPayload[4] === 0x29;
+              if (isPassphraseReq) {
+                this.log('Detected PASSPHRASE_REQUEST pattern in unparsed payload');
+                if (!this.getPassphrase) {
+                  throw new Error('Passphrase required but no passphrase UI is wired');
                 }
-              } else {
-                this.log(`Direct USB read returned ${rawResponse?.length || 0} bytes`);
+                this.log('Passphrase requested; prompting user for host entry');
+                const pw = await this.getPassphrase();
+                if (pw == null) throw new Error('Passphrase entry cancelled');
+                // Use official protobuf encoder for PassphraseAck
+                const { msgType: ackType, payload: ackPayload } = encodeByName('PassphraseAck', {
+                  passphrase: pw,
+                  on_device: false
+                });
+                this.log('Sending PassphraseAck with host entry');
+                await sendOnly(TrezorUSB.exchange, ackType, ackPayload);
+                this.log('PassphraseAck sent, waiting for device response');
+                continue;
               }
-            } catch (readErr) {
-              this.log(`Direct read failed: ${readErr}`);
             }
             this.log('Unknown/partial message; waiting for next response');
             continue;
@@ -274,10 +289,20 @@ async function sendOnly(
   payload: Uint8Array,
   timeoutMs = 2000,
 ) {
-  const frames = encodeMessage(msgType, payload);
-  for (const f of frames) {
-    await exchange(Array.from(f), timeoutMs);
+  // Use official protocol encoding
+  const protocol = require('@trezor/protocol');
+  const encoded = protocol.v1.encode(toNodeBuffer(payload), { messageType: msgType });
+  const { createChunks } = require('@trezor/transport/lib/utils/send');
+  const chunks = createChunks(encoded, Buffer.from([0x3f, 0x23, 0x23]), 64);
+  
+  for (const chunk of chunks) {
+    await exchange(Array.from(chunk), timeoutMs);
   }
+}
+
+function toNodeBuffer(u8: Uint8Array): Buffer {
+  const { Buffer } = require('buffer');
+  return Buffer.from(u8);
 }
 
 function toBase58(bytes: Uint8Array): string {

@@ -1,40 +1,16 @@
-// Adapter that prefers @trezor/transport for framing if available,
-// otherwise falls back to our local wire implementation.
+// Official Trezor library adapter using proper @trezor/transport utilities
 
-import { setTransportMode, encodeFromEncoded, concat } from './wire';
-import { Messages, parseConfigure, encodeMessage as pbEncodeMessage, decodeMessage as pbDecodeMessage, loadDefinitions } from '@trezor/protobuf';
+import { Messages, parseConfigure, encodeMessage, decodeMessage, loadDefinitions } from '@trezor/protobuf';
+import * as protocol from '@trezor/protocol';
+import { createChunks } from '@trezor/transport/lib/utils/send';
+import { success, failure } from '@trezor/transport/lib/utils/result';
+
 const MESSAGES = parseConfigure(Messages);
 
-// Strictly require @trezor/protocol — no runtime fallbacks
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const trezorProtocol = require('@trezor/protocol');
-function toNodeBuffer(u8: Uint8Array): any {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { Buffer } = require('buffer');
-    return Buffer.from(u8);
-  } catch (_) {
-    // Fallback: create Buffer-like object with the same interface
-    const arrayBuf = Uint8Array.from(u8);
-    // Add Buffer-like methods that @trezor/protocol expects
-    return Object.assign(arrayBuf, {
-      slice: (start?: number, end?: number) => arrayBuf.slice(start, end),
-      subarray: (start?: number, end?: number) => arrayBuf.subarray(start, end),
-      toString: (encoding?: string) => encoding === 'hex' 
-        ? Array.from(arrayBuf).map(b => b.toString(16).padStart(2, '0')).join('')
-        : new TextDecoder().decode(arrayBuf),
-    });
-  }
-}
-// no try/catch — if the dependency is missing, the build/runtime should fail
-
-export type Framing = 'hid' | 'vendor';
-
-export function configureFraming(fromInterfaceClass?: number) {
-  if (typeof fromInterfaceClass === 'number') {
-    if (fromInterfaceClass === 0x03) setTransportMode('hid');
-    else setTransportMode('vendor');
-  }
+function toNodeBuffer(u8: Uint8Array): Buffer {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { Buffer } = require('buffer');
+  return Buffer.from(u8);
 }
 
 // Attempt to augment messages with vendored Solana definitions if available
@@ -50,39 +26,29 @@ try {
   // ignore; definitions may not be generated at test-time
 }
 
-export function encodeMessage(msgType: number, payload: Uint8Array): Uint8Array[] {
-  const encoded = trezorProtocol.v1.encode(toNodeBuffer(payload), { messageType: msgType });
-  return encodeFromEncoded(new Uint8Array(encoded));
-}
-
-export function decodeMessage(frames: Uint8Array[]): { msgType: number; payload: Uint8Array } {
-  const merged = concat(frames);
-  const d = trezorProtocol.v1.decode(toNodeBuffer(merged));
-  return { msgType: d.messageType, payload: new Uint8Array(d.payload) };
-}
-
 type ExchangeFn = (bytes: number[], timeout: number) => Promise<number[]>;
 
-function tryParseHeader(buf: Uint8Array): { msgType: number; payloadLen: number; headerLen: number } | null {
-  // Always try manual parsing first since it's more reliable in React Native
-  if (buf.length >= 1 && buf[0] === 0x00) buf = buf.subarray(1);
-  if (buf.length >= 9 && buf[0] === 0x3f && buf[1] === 0x23 && buf[2] === 0x23) {
-    const type = (buf[3] << 8) | buf[4];
-    const len = (buf[5] << 24) | (buf[6] << 16) | (buf[7] << 8) | buf[8];
-    return { msgType: type >>> 0, payloadLen: len >>> 0, headerLen: 9 };
-  }
-  
-  // Fallback to protocol library
+// USB read wrapper that returns proper transport result format
+async function usbReceiver(exchange: ExchangeFn, timeoutMs: number) {
   try {
-    const d = trezorProtocol.v1.decode(toNodeBuffer(buf));
-    if (d && typeof d.messageType === 'number' && typeof d.length === 'number') {
-      return { msgType: d.messageType >>> 0, payloadLen: d.length >>> 0, headerLen: 9 };
+    const data = await exchange([], timeoutMs);
+    if (data && data.length > 0) {
+      return success(toNodeBuffer(data));
     }
-  } catch (_) {
-    // Protocol parse failed, manual parse already tried above
+    return failure('No data received from USB');
+  } catch (error) {
+    return failure(`USB read error: ${error}`);
   }
-  
-  return null;
+}
+
+// USB write wrapper that returns proper transport result format  
+async function usbWriter(exchange: ExchangeFn, data: Buffer, timeoutMs: number) {
+  try {
+    await exchange(Array.from(data), timeoutMs);
+    return success(undefined);
+  } catch (error) {
+    return failure(`USB write error: ${error}`);
+  }
 }
 
 export async function sendAndReceive(
@@ -91,42 +57,72 @@ export async function sendAndReceive(
   payload: Uint8Array,
   timeoutMs = 2000,
 ): Promise<{ msgType: number; payload: Uint8Array }> {
-  const frames = encodeMessage(msgType, payload);
-  for (const f of frames) {
-    await exchange(Array.from(f), timeoutMs);
+  // Use official Trezor protocol encoding
+  const encoded = protocol.v1.encode(toNodeBuffer(payload), { messageType: msgType });
+  const chunks = createChunks(encoded, Buffer.from([0x3f, 0x23, 0x23]), 64);
+  
+  // Send all chunks
+  for (const chunk of chunks) {
+    await exchange(Array.from(chunk), timeoutMs);
   }
-  const received: Uint8Array[] = [];
-  let header: { msgType: number; payloadLen: number; headerLen: number } | null = null;
+  
+  // Receive using official Trezor approach
+  const receiver = () => usbReceiver(exchange, timeoutMs);
+  
+  // Use official receive function approach
+  let totalReceived = Buffer.alloc(0);
+  let expectedLength: number | null = null;
+  let messageType: number | null = null;
+  
   const started = Date.now();
   while (Date.now() - started < timeoutMs + 50) {
-    const remain = Math.max(1, timeoutMs - (Date.now() - started));
+    const readResult = await receiver();
+    if (!readResult.success) {
+      continue;
+    }
+    
+    const data = readResult.payload as Buffer;
+    totalReceived = Buffer.concat([totalReceived, data]);
+    
+    // Use official protocol decoder
     try {
-      const part = await exchange([], remain);
-      if (part && part.length) {
-        received.push(new Uint8Array(part));
-        const merged = concat(received);
+      const decoded = protocol.v1.decode(totalReceived);
+      console.log(`Official parser: type=0x${decoded.messageType.toString(16)} len=${decoded.length}`);
+      
+      if (decoded.messageType && decoded.length !== undefined) {
+        messageType = decoded.messageType;
+        expectedLength = decoded.length;
         
-        header = header || tryParseHeader(merged);
-        if (header) {
-          const avail = Math.max(0, merged.length - header.headerLen);
-          if (avail >= header.payloadLen) {
-            const payloadBuf = merged.subarray(header.headerLen, header.headerLen + header.payloadLen);
-            return { msgType: header.msgType, payload: payloadBuf };
-          }
+        if (totalReceived.length >= decoded.payload.length + 9) {
+          // Complete message received
+          return { 
+            msgType: decoded.messageType, 
+            payload: new Uint8Array(decoded.payload) 
+          };
         }
       }
-    } catch (_) {
-      // READ_FAIL or transient error: wait briefly and keep polling until overall timeout
-      await new Promise((r) => setTimeout(r, 50));
+    } catch (parseError) {
+      // Continue reading if parsing fails
+      console.log(`Official parser failed, continuing to read: ${parseError}`);
+    }
+    
+    // Break if we have expected length and enough data
+    if (messageType && expectedLength && totalReceived.length >= expectedLength + 9) {
+      break;
     }
   }
-  const merged = concat(received);
-  const h = tryParseHeader(merged);
-  if (h) {
-    const payloadBuf = merged.subarray(h.headerLen, h.headerLen + Math.min(h.payloadLen, Math.max(0, merged.length - h.headerLen)));
-    return { msgType: h.msgType, payload: payloadBuf };
+  
+  // Final attempt to parse whatever we received
+  try {
+    const decoded = protocol.v1.decode(totalReceived);
+    return { 
+      msgType: decoded.messageType || 0, 
+      payload: decoded.payload ? new Uint8Array(decoded.payload) : new Uint8Array()
+    };
+  } catch {
+    console.log(`Final parse failed, returning raw data`);
+    return { msgType: 0, payload: new Uint8Array(totalReceived) };
   }
-  return { msgType: 0, payload: merged };
 }
 
 export function encodeByName(name: string, data: any): { msgType: number; payload: Uint8Array } {
