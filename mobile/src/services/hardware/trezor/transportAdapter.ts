@@ -14,7 +14,16 @@ function toNodeBuffer(u8: Uint8Array): any {
     const { Buffer } = require('buffer');
     return Buffer.from(u8);
   } catch (_) {
-    return Uint8Array.from(u8);
+    // Fallback: create Buffer-like object with the same interface
+    const arrayBuf = Uint8Array.from(u8);
+    // Add Buffer-like methods that @trezor/protocol expects
+    return Object.assign(arrayBuf, {
+      slice: (start?: number, end?: number) => arrayBuf.slice(start, end),
+      subarray: (start?: number, end?: number) => arrayBuf.subarray(start, end),
+      toString: (encoding?: string) => encoding === 'hex' 
+        ? Array.from(arrayBuf).map(b => b.toString(16).padStart(2, '0')).join('')
+        : new TextDecoder().decode(arrayBuf),
+    });
   }
 }
 // no try/catch — if the dependency is missing, the build/runtime should fail

@@ -6,7 +6,10 @@ import {
   StyleSheet,
   ScrollView,
   Alert,
+  Platform,
 } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
+import { TrezorUSB } from '../native/TrezorUSB';
 import { useTrezor } from '../hooks/useTrezor';
 import { PassphraseModal } from '../components/PassphraseModal';
 
@@ -74,6 +77,68 @@ export const TrezorTestScreen: React.FC = () => {
             <Text key={index} style={styles.logText}>{log}</Text>
           ))}
         </ScrollView>
+        
+        <View style={styles.logButtonContainer}>
+          <TouchableOpacity style={styles.logButton} onPress={async () => {
+            try {
+              // Get native USB logs from the TrezorUSB module
+              const native = await TrezorUSB.getDebugLog().catch(() => [] as string[]);
+              
+              // Get transport interface info for diagnostics
+              let transportInfo: any = {};
+              let transportDiag = 'protocol=v1';
+              try {
+                transportInfo = await TrezorUSB.getInterfaceInfo();
+                const klass = transportInfo?.interfaceClass as number | undefined;
+                const isHid = klass === 0x03;
+                const mode = isHid ? 'hid' : 'vendor';
+                const hidFallback = isHid ? 'enabled' : 'disabled';
+                transportDiag = `protocol=v1, iface=${mode}; hidLeadingZeroFallback=${hidFallback}`;
+              } catch {}
+              
+              // Build comprehensive log with diagnostic headers
+              const diagHeader: string[] = [];
+              diagHeader.push(`Transport: ${transportDiag}`);
+              
+              if (transportInfo && Object.keys(transportInfo).length > 0) {
+                const c = transportInfo.interfaceClass ?? '-';
+                const s = transportInfo.interfaceSubclass ?? '-';
+                const p = transportInfo.interfaceProtocol ?? '-';
+                const inAddr = Number(transportInfo.inEndpointAddress ?? 0).toString(16);
+                const outAddr = Number(transportInfo.outEndpointAddress ?? 0).toString(16);
+                const inMps = transportInfo.inMaxPacketSize ?? '-';
+                const outMps = transportInfo.outMaxPacketSize ?? '-';
+                diagHeader.push(`Iface: class=${c} subclass=${s} proto=${p}`);
+                diagHeader.push(`EPs: in=0x${inAddr} mps=${inMps} out=0x${outAddr} mps=${outMps}`);
+              }
+              
+              // Merge all logs: diagnostic headers + app logs + native USB logs
+              const merged = [
+                ...diagHeader,
+                ...logs,
+                ...(Array.isArray(native) ? native : [])
+              ];
+              
+              await Clipboard.setString(merged.join('\n'));
+              Alert.alert('Success', `Copied ${merged.length} lines (app+native) to clipboard`);
+            } catch (e) {
+              Alert.alert('Error', `Copy failed: ${String(e)}`);
+            }
+          }}>
+            <Text style={styles.logButtonText}>Copy All Logs</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity style={styles.logButton} onPress={async () => {
+            try {
+              await TrezorUSB.clearDebugLog();
+              Alert.alert('Success', 'Native logs cleared');
+            } catch (e) {
+              Alert.alert('Error', `Clear failed: ${String(e)}`);
+            }
+          }}>
+            <Text style={styles.logButtonText}>Clear All Logs</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <PassphraseModal
@@ -174,8 +239,25 @@ const styles = StyleSheet.create({
   },
   logText: {
     fontSize: 12,
-    fontFamily: 'monospace',
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
     color: '#666',
     marginBottom: 2,
+  },
+  logButtonContainer: {
+    flexDirection: 'row',
+    marginTop: 10,
+    gap: 10,
+  },
+  logButton: {
+    backgroundColor: '#f0f0f0',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 5,
+    flex: 1,
+  },
+  logButtonText: {
+    textAlign: 'center',
+    fontSize: 14,
+    color: '#333',
   },
 });

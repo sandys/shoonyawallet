@@ -9,7 +9,7 @@ type TransportBLEType = {
 
 type SolanaAppType = new (transport: any) => {
   getAppConfiguration: () => Promise<{ version?: string; name?: string }>;
-  signTransaction: (path: string, tx: Buffer) => Promise<{ signature: Buffer } | Buffer>;
+  signTransaction: (path: string, tx: Uint8Array) => Promise<{ signature: Uint8Array } | Uint8Array>;
 };
 
 async function getTransportBLE(): Promise<TransportBLEType | null> {
@@ -88,9 +88,9 @@ export class LedgerBridge {
 
   async signTransaction(serializedTx: Uint8Array, path = "44'/501'/0'"): Promise<Uint8Array> {
     if (!this.solana) throw new Error('Ledger not connected');
-    const res = await this.solana.signTransaction(path, Buffer.from(serializedTx));
-    const sigBuf: Buffer = (res as any).signature ?? (res as any);
-    return new Uint8Array(sigBuf);
+    const res = await this.solana.signTransaction(path, serializedTx);
+    const sigBuf: Uint8Array = (res as any).signature ?? (res as any);
+    return sigBuf;
   }
 
   async disconnect(): Promise<void> {
