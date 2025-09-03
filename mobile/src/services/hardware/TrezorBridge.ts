@@ -4,7 +4,7 @@ import { SOL_DERIVATION_PATH } from './paths';
 import { classifyTrezorError } from './errors';
 import { TrezorUSB } from '../../native/TrezorUSB';
 import { setHIDReportMode } from './trezor/wire';
-import { Messages, parseConfigure, encodeMessage, decodeMessage } from '@trezor/protobuf';
+import { Messages, parseConfigure, encodeMessage, decodeMessage, loadDefinitions } from '@trezor/protobuf';
 import * as protocol from '@trezor/protocol';
 
 export type ProgressCallback = (message: string) => void;
@@ -21,6 +21,26 @@ type ConnectOptions = {
 };
 
 const MESSAGES = parseConfigure(Messages);
+
+let messageDefinitionsLoaded = false;
+
+async function ensureMessageDefinitionsLoaded(): Promise<void> {
+  if (messageDefinitionsLoaded) return;
+  
+  try {
+    const descriptor = require('./trezor/protos/descriptor.json');
+    const messagesPkg = descriptor?.nested?.hw?.nested?.trezor?.nested?.messages;
+    if (messagesPkg) {
+      console.log('Loading Trezor message definitions...');
+      await loadDefinitions(MESSAGES, 'hw.trezor.messages', async () => messagesPkg);
+      messageDefinitionsLoaded = true;
+      console.log('Loaded message definitions');
+    }
+  } catch (e) {
+    console.log('Failed to load message definitions:', e);
+    throw e;
+  }
+}
 
 function bip32Path(path: string): number[] {
   return path.split('/').slice(1).map(n => {
@@ -50,6 +70,7 @@ export class TrezorBridge {
   }
 
   private async sendMessage(messageName: string, messageData: Record<string, unknown>): Promise<void> {
+    await ensureMessageDefinitionsLoaded();
     const { messageType, message } = encodeMessage(MESSAGES, messageName, messageData);
     const encoded = protocol.v1.encode(message, { messageType });
     

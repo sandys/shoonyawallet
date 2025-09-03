@@ -11,9 +11,9 @@ describe('trezor transport adapter (protobuf mapping)', () => {
 
   const PATH = [44 | 0x80000000, 501 | 0x80000000, 0 | 0x80000000];
 
-  it('encodes/decodes Initialize correctly', () => {
+  it('encodes/decodes Initialize correctly', async () => {
     const { encodeByName, decodeToObject } = loadAdapter();
-    const { msgType, payload } = encodeByName('Initialize', {});
+    const { msgType, payload } = await encodeByName('Initialize', {});
     expect(typeof msgType).toBe('number');
     // Initialize is an empty message
     expect(payload.byteLength).toBe(0);
@@ -22,9 +22,9 @@ describe('trezor transport adapter (protobuf mapping)', () => {
     expect(decoded === null || typeof decoded === 'object').toBe(true);
   });
 
-  it('encodes SolanaGetPublicKey payload', () => {
+  it('encodes SolanaGetPublicKey payload', async () => {
     const { encodeByName, decodeToObject } = loadAdapter();
-    const { msgType, payload } = encodeByName('SolanaGetPublicKey', { address_n: PATH, show_display: false });
+    const { msgType, payload } = await encodeByName('SolanaGetPublicKey', { address_n: PATH, show_display: false });
     expect(typeof msgType).toBe('number');
     // If Solana definitions were loaded, payload may be non-empty and decode returns mapping.
     // Otherwise tolerate empty payload / null decode.

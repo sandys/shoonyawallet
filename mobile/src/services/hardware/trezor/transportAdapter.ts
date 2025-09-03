@@ -6,18 +6,26 @@ import * as protocol from '@trezor/protocol';
 const MESSAGES = parseConfigure(Messages);
 
 // Load Trezor message definitions from generated descriptor
-try {
-  const descriptor = require('./protos/descriptor.json');
-  const messagesPkg = descriptor?.nested?.hw?.nested?.trezor?.nested?.messages;
-  if (messagesPkg) {
-    console.log('Loading Trezor message definitions...');
-    loadDefinitions(MESSAGES, 'hw.trezor.messages', async () => messagesPkg);
-    console.log('Loaded message definitions');
-  } else {
-    console.log('No message definitions found in descriptor');
+let messageDefinitionsLoaded = false;
+
+async function ensureMessageDefinitionsLoaded(): Promise<void> {
+  if (messageDefinitionsLoaded) return;
+  
+  try {
+    const descriptor = require('./protos/descriptor.json');
+    const messagesPkg = descriptor?.nested?.hw?.nested?.trezor?.nested?.messages;
+    if (messagesPkg) {
+      console.log('Loading Trezor message definitions...');
+      await loadDefinitions(MESSAGES, 'hw.trezor.messages', async () => messagesPkg);
+      messageDefinitionsLoaded = true;
+      console.log('Loaded message definitions');
+    } else {
+      console.log('No message definitions found in descriptor');
+    }
+  } catch (e) {
+    console.log('Failed to load message definitions:', e);
+    throw e;
   }
-} catch (e) {
-  console.log('Failed to load message definitions:', e);
 }
 
 function toNodeBuffer(u8: Uint8Array): Buffer {
@@ -33,6 +41,9 @@ export async function sendAndReceive(
   messageData: Record<string, unknown>,
   timeoutMs = 2000,
 ): Promise<{ type: string; message: any }> {
+  
+  // Ensure message definitions are loaded before encoding
+  await ensureMessageDefinitionsLoaded();
   
   // Encode using official protobuf
   const { messageType, message } = encodeMessage(MESSAGES, messageName, messageData);
@@ -86,8 +97,9 @@ export async function sendAndReceive(
   }
 }
 
-export function encodeByName(name: string, data: any): { msgType: number; payload: Uint8Array } {
+export async function encodeByName(name: string, data: any): Promise<{ msgType: number; payload: Uint8Array }> {
   try {
+    await ensureMessageDefinitionsLoaded();
     const { messageType, message } = encodeMessage(MESSAGES, name, data);
     return { msgType: messageType as number, payload: new Uint8Array(message) };
   } catch (_) {
