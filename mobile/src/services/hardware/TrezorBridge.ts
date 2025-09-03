@@ -4,39 +4,90 @@ import { SOL_DERIVATION_PATH } from './paths';
 import { classifyTrezorError } from './errors';
 import { TrezorUSB } from '../../native/TrezorUSB';
 import { setHIDReportMode } from './trezor/wire';
-import { configureFraming, sendAndReceive, encodeMessage, decodeToObject } from './trezor/transportAdapter';
-import { bip32Path, encodeSolanaGetPublicKey, decodeSolanaPublicKey, getMsgTypeId, encodeByName as pEncodeByName } from './trezor/proto';
+import { Messages, parseConfigure, encodeMessage, decodeMessage } from '@trezor/protobuf';
+import * as protocol from '@trezor/protocol';
 
 export type ProgressCallback = (message: string) => void;
 export type PassphraseProvider = () => Promise<string | null>;
 
 type ConnectOptions = {
   maxAttempts?: number;
-  attemptDelayMs?: number; // base delay
+  attemptDelayMs?: number;
   backoff?: 'linear' | 'exponential';
   maxDelayMs?: number;
-  // Optional: wait for device presence before attempting connection
-  waitForPresenceMs?: number; // total time to wait for device appearance
-  presencePollMs?: number; // poll interval for listDevices
-  presenceStableCount?: number; // require N consecutive polls reporting present
+  waitForPresenceMs?: number;
+  presencePollMs?: number;
+  presenceStableCount?: number;
 };
+
+const MESSAGES = parseConfigure(Messages);
+
+function bip32Path(path: string): number[] {
+  return path.split('/').slice(1).map(n => {
+    const hardened = n.endsWith("'") || n.endsWith('h');
+    const num = parseInt(hardened ? n.slice(0, -1) : n, 10);
+    return hardened ? (num | 0x80000000) >>> 0 : num;
+  });
+}
+
+function toNodeBuffer(u8: Uint8Array): Buffer {
+  const { Buffer } = require('buffer');
+  return Buffer.from(u8);
+}
+
+function toBase58(bytes: Uint8Array): string {
+  return bs58.encode(bytes);
+}
 
 export class TrezorBridge {
   private log: ProgressCallback;
   private getPassphrase?: PassphraseProvider;
   private isHid = false;
-  private static MSG = {
-    FEATURES: 17,
-    FAILURE: 3,
-    BUTTON_REQUEST: 26,
-    BUTTON_ACK: 27,
-    PASSPHRASE_REQUEST: 41,
-    PASSPHRASE_ACK: 42,
-  } as const;
 
   constructor(logger?: ProgressCallback, passphraseProvider?: PassphraseProvider) {
     this.log = logger ?? (() => {});
     this.getPassphrase = passphraseProvider;
+  }
+
+  private async sendMessage(messageName: string, messageData: Record<string, unknown>): Promise<void> {
+    const { messageType, message } = encodeMessage(MESSAGES, messageName, messageData);
+    const encoded = protocol.v1.encode(message, { messageType });
+    
+    // Send in 64-byte chunks
+    for (let i = 0; i < encoded.length; i += 64) {
+      const chunk = Array.from(encoded.slice(i, i + 64));
+      while (chunk.length < 64) chunk.push(0);
+      await TrezorUSB.exchange(chunk, 2000);
+    }
+  }
+
+  private async receiveMessage(timeoutMs = 15000): Promise<{ type: string; message: any }> {
+    let receivedBuffer = Buffer.alloc(0);
+    const started = Date.now();
+    
+    while (Date.now() - started < timeoutMs) {
+      try {
+        const part = await TrezorUSB.exchange([], 2000);
+        if (part && part.length > 0) {
+          receivedBuffer = Buffer.concat([receivedBuffer, toNodeBuffer(new Uint8Array(part))]);
+          
+          try {
+            const decoded = protocol.v1.decode(receivedBuffer);
+            if (decoded.messageType !== undefined && decoded.payload) {
+              const { type, message } = decodeMessage(MESSAGES, decoded.messageType, decoded.payload);
+              this.log(`Received message: ${type}`);
+              return { type, message };
+            }
+          } catch {
+            // Continue reading if incomplete
+          }
+        }
+      } catch {
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+    
+    throw new Error('Message receive timeout');
   }
 
   async connectAndGetPublicKey(opts: ConnectOptions = {}): Promise<string> {
@@ -55,7 +106,6 @@ export class TrezorBridge {
         this.log(`Attempt ${attempt}/${maxAttempts}: locate device`);
         if (!TrezorUSB.isSupported()) throw new Error('Native USB not supported');
         
-        // Wait longer for device to appear and stabilize when locked
         const found = await this.waitForDevicePresence(
           attempt === 1 ? waitForPresenceMs : Math.max(10000, attemptDelayMs * 5), 
           presencePollMs, 
@@ -78,135 +128,81 @@ export class TrezorBridge {
         await TrezorUSB.ensurePermission(dev);
         this.log('Opening USB session');
         await TrezorUSB.open(dev);
-        // Determine transport mode based on Android interface class
+        
+        // Determine transport mode
         try {
           const info = await TrezorUSB.getInterfaceInfo();
           const klass = (info as any)?.interfaceClass;
           this.isHid = klass === 0x03;
-          configureFraming(typeof klass === 'number' ? klass : undefined);
           if (typeof klass === 'number') {
             this.log(`USB interface class=${klass}`);
             this.log(`Transport diag: protocol=v1, iface=${this.isHid ? 'hid' : 'vendor'}; hidLeadingZeroFallback=${this.isHid ? 'enabled' : 'disabled'}`);
           }
         } catch {}
-        // Allow device time to settle before first handshake
+        
         await this.simulateDelay(200);
         this.log('Handshake (Initialize → Features)');
         await this.handshake(15000);
-        this.log('Exchanging messages (public key request)');
+        
+        this.log('Requesting Solana public key');
         const addressN = bip32Path(SOL_DERIVATION_PATH);
-        const payload = encodeSolanaGetPublicKey(addressN, false);
-        const msgType = getMsgTypeId('MessageType_SolanaGetPublicKey');
-        this.log(`Send SolanaGetPublicKey type=${msgType} bytes=${payload.length}`);
-        let keyB58: string | null = null;
+        
         let guard = 0;
-        while (guard++ < 10 && !keyB58) {
-          const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 15000);
-          this.log(`Recv type=${respType} bytes=${respPayload.length}`);
-          
-          // Try to decode the message using official protobuf decoder
+        while (guard++ < 10) {
           try {
-            const decoded = decodeToObject(respType, respPayload);
-            if (decoded) {
-              this.log(`Decoded message type: ${decoded.type}`);
+            await this.sendMessage('SolanaGetPublicKey', {
+              address_n: addressN,
+              show_display: false
+            });
+            
+            const response = await this.receiveMessage(15000);
+            
+            if (response.type === 'PassphraseRequest') {
+              this.log('PASSPHRASE_REQUEST detected');
+              if (!this.getPassphrase) {
+                throw new Error('Passphrase required but no passphrase UI is wired');
+              }
+              this.log('Prompting user for passphrase');
+              const pw = await this.getPassphrase();
+              if (pw == null) throw new Error('Passphrase entry cancelled');
               
-              // Handle PassphraseRequest using proper message type
-              if (decoded.type === 'PassphraseRequest') {
-                this.log('PASSPHRASE_REQUEST detected via official protobuf decoder');
-                if (!this.getPassphrase) {
-                  throw new Error('Passphrase required but no passphrase UI is wired');
-                }
-                this.log('Passphrase requested; prompting user for host entry');
-                const pw = await this.getPassphrase();
-                if (pw == null) throw new Error('Passphrase entry cancelled');
-                // Use official protobuf encoder for PassphraseAck
-                const { msgType: ackType, payload: ackPayload } = encodeByName('PassphraseAck', {
-                  passphrase: pw,
-                  on_device: false
-                });
-                this.log('Sending PassphraseAck with host entry');
-                await sendOnly(TrezorUSB.exchange, ackType, ackPayload);
-                this.log('PassphraseAck sent, waiting for device response');
-                continue;
+              this.log('Sending PassphraseAck');
+              await this.sendMessage('PassphraseAck', {
+                passphrase: pw,
+                on_device: false
+              });
+              continue;
+            }
+            
+            if (response.type === 'ButtonRequest') {
+              this.log('Button requested; sending ButtonAck');
+              await this.sendMessage('ButtonAck', {});
+              continue;
+            }
+            
+            if (response.type === 'Failure') {
+              throw new Error('Device Failure; action was rejected or passphrase incorrect');
+            }
+            
+            if (response.type === 'SolanaPublicKey') {
+              const publicKey = response.message.public_key;
+              if (publicKey && publicKey.length > 0) {
+                const keyB58 = toBase58(new Uint8Array(publicKey));
+                this.log('Public key received');
+                await TrezorUSB.close();
+                return keyB58;
               }
             }
-          } catch (decodeError) {
-            this.log(`Protobuf decode failed: ${decodeError}`);
+            
+            this.log(`Unexpected message type: ${response.type}`);
+            
+          } catch (commError) {
+            this.log(`Communication error: ${commError}`);
+            throw commError;
           }
-          
-          // Debug: show raw payload bytes for analysis
-          if (respPayload.length > 0) {
-            const hex = Array.from(respPayload.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-            this.log(`Raw payload: ${hex}${respPayload.length > 8 ? '...' : ''}`);
-          }
-          
-          // Check if we got payload but failed to parse type (likely parsing issue)
-          if (respType === 0 && respPayload.length > 0) {
-            this.log(`Parsing failed for ${respPayload.length} byte response - checking for PASSPHRASE_REQUEST pattern`);
-            // Check first 5 bytes for passphrase request pattern: 3F 23 23 00 29
-            if (respPayload.length >= 5) {
-              const isPassphraseReq = respPayload[0] === 0x3f && respPayload[1] === 0x23 && 
-                                    respPayload[2] === 0x23 && respPayload[3] === 0x00 && respPayload[4] === 0x29;
-              if (isPassphraseReq) {
-                this.log('Detected PASSPHRASE_REQUEST pattern in unparsed payload');
-                if (!this.getPassphrase) {
-                  throw new Error('Passphrase required but no passphrase UI is wired');
-                }
-                this.log('Passphrase requested; prompting user for host entry');
-                const pw = await this.getPassphrase();
-                if (pw == null) throw new Error('Passphrase entry cancelled');
-                // Use official protobuf encoder for PassphraseAck
-                const { msgType: ackType, payload: ackPayload } = encodeByName('PassphraseAck', {
-                  passphrase: pw,
-                  on_device: false
-                });
-                this.log('Sending PassphraseAck with host entry');
-                await sendOnly(TrezorUSB.exchange, ackType, ackPayload);
-                this.log('PassphraseAck sent, waiting for device response');
-                continue;
-              }
-            }
-            this.log('Unknown/partial message; waiting for next response');
-            continue;
-          }
-          if (respType === TrezorBridge.MSG.PASSPHRASE_REQUEST) {
-            this.log(`PASSPHRASE_REQUEST detected (type=${respType})`);
-            // Trezor Safe 3 and newer models require host-based passphrase entry
-            if (!this.getPassphrase) {
-              this.log('ERROR: Passphrase required but no passphrase UI is wired');
-              throw new Error('Passphrase required but no passphrase UI is wired');
-            }
-            this.log('Passphrase requested; prompting user for host entry');
-            const pw = await this.getPassphrase();
-            this.log(`Passphrase entry result: ${pw === null ? 'cancelled' : 'provided'}`);
-            if (pw == null) throw new Error('Passphrase entry cancelled');
-            const ack = encodePassphraseAckHost(pw);
-            this.log('Sending PassphraseAck with host entry');
-            await sendOnly(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, ack);
-            this.log('PassphraseAck sent, waiting for device response');
-            continue;
-          }
-          if (respType === TrezorBridge.MSG.BUTTON_REQUEST) {
-            this.log('Button requested; sending ButtonAck');
-            await sendOnly(TrezorUSB.exchange, TrezorBridge.MSG.BUTTON_ACK, new Uint8Array());
-            continue;
-          }
-          if (respType === TrezorBridge.MSG.FAILURE) {
-            throw new Error('Device Failure; action was rejected or passphrase incorrect');
-          }
-          const { public_key } = decodeSolanaPublicKey(respPayload);
-          const keyBytes = public_key ?? new Uint8Array();
-          this.log(`Decoded pubkey bytes=${keyBytes.length}`);
-          if (keyBytes.length === 0) {
-            // Loop again if device needs another round (e.g., after ack)
-            continue;
-          }
-          keyB58 = toBase58(keyBytes);
         }
-        if (!keyB58) throw new Error('Empty public key payload');
-        this.log('Public key received');
-        await TrezorUSB.close();
-        return keyB58;
+        
+        throw new Error('Failed to get public key after 10 attempts');
       } catch (e) {
         lastErr = e;
         const msg = e instanceof Error ? e.message : String(e);
@@ -231,36 +227,29 @@ export class TrezorBridge {
   }
 
   private async handshake(timeoutMs = 3000) {
-    const initType = getMsgTypeId('MessageType_Initialize');
-    const payload = pEncodeByName('Initialize', {});
-    this.log(`Handshake: send Initialize type=${initType} bytes=${payload.length}`);
-    let msgType: number, resp: Uint8Array;
+    this.log('Handshake: send Initialize');
     try {
-      try {
-        const res = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
-        msgType = res.msgType; resp = res.payload;
-      } catch (e) {
-        if (this.isHid) {
-          this.log('Handshake failed on first attempt; retrying with leadingZero HID report mode');
-          setHIDReportMode('leadingZero');
-          const res2 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
-          msgType = res2.msgType; resp = res2.payload;
-        } else {
-          // Vendor iface: retry once in-session after a short delay without changing framing
-          this.log('Handshake read timeout; retrying in-session (vendor iface)');
-          await this.simulateDelay(250);
-          const res3 = await sendAndReceive(TrezorUSB.exchange, initType, payload, timeoutMs);
-          msgType = res3.msgType; resp = res3.payload;
-        }
+      await this.sendMessage('Initialize', {});
+      const response = await this.receiveMessage(timeoutMs);
+      
+      if (response.type === 'Features') {
+        this.log('Handshake OK');
+      } else {
+        throw new Error(`Unexpected handshake response: ${response.type}`);
       }
-      this.log(`Handshake: recv type=${msgType} bytes=${resp.length}`);
-      // Try decode with adapter to validate response (best-effort)
-      try { decodeToObject(msgType, resp); } catch {}
-      this.log('Handshake OK');
     } catch (e: any) {
-      const msg = e?.message ?? String(e);
-      this.log(`Handshake FAILED: ${msg}`);
-      throw e;
+      if (this.isHid) {
+        this.log('Handshake failed; retrying with leadingZero HID report mode');
+        setHIDReportMode('leadingZero');
+        await this.sendMessage('Initialize', {});
+        const response = await this.receiveMessage(timeoutMs);
+      } else {
+        this.log('Handshake read timeout; retrying in-session (vendor iface)');
+        await this.simulateDelay(250);
+        await this.sendMessage('Initialize', {});
+        const response = await this.receiveMessage(timeoutMs);
+      }
+      this.log('Handshake OK');
     }
   }
 
@@ -282,50 +271,3 @@ export class TrezorBridge {
     return false;
   }
 }
-
-async function sendOnly(
-  exchange: (bytes: number[], timeout: number) => Promise<number[]>,
-  msgType: number,
-  payload: Uint8Array,
-  timeoutMs = 2000,
-) {
-  // Use official protocol encoding
-  const protocol = require('@trezor/protocol');
-  const encoded = protocol.v1.encode(toNodeBuffer(payload), { messageType: msgType });
-  const { createChunks } = require('@trezor/transport/lib/utils/send');
-  const chunks = createChunks(encoded, Buffer.from([0x3f, 0x23, 0x23]), 64);
-  
-  for (const chunk of chunks) {
-    await exchange(Array.from(chunk), timeoutMs);
-  }
-}
-
-function toNodeBuffer(u8: Uint8Array): Buffer {
-  const { Buffer } = require('buffer');
-  return Buffer.from(u8);
-}
-
-function toBase58(bytes: Uint8Array): string {
-  return bs58.encode(bytes);
-}
-
-function encodePassphraseAckHost(passphrase: string): Uint8Array {
-  // PassphraseAck: field 1 (passphrase) = string, field 2 (on_device)=false
-  const str = new TextEncoder().encode(passphrase);
-  const out: number[] = [];
-  // field 1, length-delimited
-  out.push((1 << 3) | 2);
-  // length of string
-  writeVarint(out, str.length >>> 0);
-  for (let i = 0; i < str.length; i++) out.push(str[i]);
-  // field 2, varint = 0 (false)
-  out.push((2 << 3) | 0, 0);
-  return Uint8Array.from(out);
-}
-
-function writeVarint(out: number[], v: number) {
-  while (v > 0x7f) { out.push((v & 0x7f) | 0x80); v >>>= 7; }
-  out.push(v);
-}
-
-// hex helpers removed; no longer needed with protobuf decode
