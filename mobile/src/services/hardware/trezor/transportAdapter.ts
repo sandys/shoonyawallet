@@ -1,12 +1,13 @@
 // Adapter that prefers @trezor/transport for framing if available,
 // otherwise falls back to our local wire implementation.
 
-import type { TrezorUSB } from '../../../native/TrezorUSB';
-import { setTransportMode, setHIDReportMode, encodeFrame, encodeFromEncoded, decodeFrames, concat } from './wire';
+import { setTransportMode, encodeFromEncoded, concat } from './wire';
 import { Messages, parseConfigure, encodeMessage as pbEncodeMessage, decodeMessage as pbDecodeMessage, loadDefinitions } from '@trezor/protobuf';
 const MESSAGES = parseConfigure(Messages);
 
-let trezorProtocol: any = null;
+// Strictly require @trezor/protocol — no runtime fallbacks
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const trezorProtocol = require('@trezor/protocol');
 function toNodeBuffer(u8: Uint8Array): any {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -16,12 +17,7 @@ function toNodeBuffer(u8: Uint8Array): any {
     return Uint8Array.from(u8);
   }
 }
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  trezorProtocol = require('@trezor/protocol');
-} catch (_) {
-  trezorProtocol = null;
-}
+// no try/catch — if the dependency is missing, the build/runtime should fail
 
 export type Framing = 'hid' | 'vendor';
 
@@ -46,43 +42,27 @@ try {
 }
 
 export function encodeMessage(msgType: number, payload: Uint8Array): Uint8Array[] {
-  if (trezorProtocol?.v1?.encode) {
-    try {
-      const encoded = trezorProtocol.v1.encode(toNodeBuffer(payload), { messageType: msgType });
-      return encodeFromEncoded(new Uint8Array(encoded));
-    } catch (_) {
-      // fall through
-    }
-  }
-  return encodeFrame(msgType, payload);
+  const encoded = trezorProtocol.v1.encode(toNodeBuffer(payload), { messageType: msgType });
+  return encodeFromEncoded(new Uint8Array(encoded));
 }
 
 export function decodeMessage(frames: Uint8Array[]): { msgType: number; payload: Uint8Array } {
   const merged = concat(frames);
-  if (trezorProtocol?.v1?.decode) {
-    try {
-      const d = trezorProtocol.v1.decode(toNodeBuffer(merged));
-      return { msgType: d.messageType, payload: new Uint8Array(d.payload) };
-    } catch (_) {
-      // fall back
-    }
-  }
-  return decodeFrames(frames);
+  const d = trezorProtocol.v1.decode(toNodeBuffer(merged));
+  return { msgType: d.messageType, payload: new Uint8Array(d.payload) };
 }
 
 type ExchangeFn = (bytes: number[], timeout: number) => Promise<number[]>;
 
 function tryParseHeader(buf: Uint8Array): { msgType: number; payloadLen: number; headerLen: number } | null {
-  // Use official decoder if available
-  if (trezorProtocol?.v1?.decode) {
-    try {
-      const d = trezorProtocol.v1.decode(toNodeBuffer(buf));
-      if (d && typeof d.messageType === 'number' && typeof d.length === 'number') {
-        return { msgType: d.messageType >>> 0, payloadLen: d.length >>> 0, headerLen: 9 };
-      }
-    } catch (_) {}
-  }
-  // skip leading 0x00 if present
+  try {
+    const d = trezorProtocol.v1.decode(toNodeBuffer(buf));
+    if (d && typeof d.messageType === 'number' && typeof d.length === 'number') {
+      return { msgType: d.messageType >>> 0, payloadLen: d.length >>> 0, headerLen: 9 };
+    }
+  } catch (_) {}
+  // Also attempt manual parse of the header for streaming assembly; this is not a package fallback,
+  // it is just parsing of the v1 header already chosen above.
   if (buf.length >= 1 && buf[0] === 0x00) buf = buf.subarray(1);
   if (buf.length >= 9 && buf[0] === 0x3f && buf[1] === 0x23 && buf[2] === 0x23) {
     const type = (buf[3] << 8) | buf[4];

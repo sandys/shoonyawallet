@@ -1,9 +1,10 @@
 import { Platform } from 'react-native';
+import bs58 from 'bs58';
 import { SOL_DERIVATION_PATH } from './paths';
 import { classifyTrezorError } from './errors';
 import { TrezorUSB } from '../../native/TrezorUSB';
 import { setHIDReportMode } from './trezor/wire';
-import { configureFraming, sendAndReceive } from './trezor/transportAdapter';
+import { configureFraming, sendAndReceive, encodeMessage, decodeToObject } from './trezor/transportAdapter';
 import { bip32Path, encodeSolanaGetPublicKey, decodeSolanaPublicKey, getMsgTypeId, encodeByName as pEncodeByName } from './trezor/proto';
 
 export type ProgressCallback = (message: string) => void;
@@ -39,7 +40,7 @@ export class TrezorBridge {
   }
 
   async connectAndGetPublicKey(opts: ConnectOptions = {}): Promise<string> {
-    const { maxAttempts = 6, attemptDelayMs = 1000, backoff = 'exponential', maxDelayMs = 8000, waitForPresenceMs = 15000, presencePollMs = 500, presenceStableCount = 2 } = opts;
+    const { maxAttempts = 6, attemptDelayMs = 1000, backoff = 'exponential', maxDelayMs = 8000, waitForPresenceMs = 60000, presencePollMs = 500, presenceStableCount = 2 } = opts;
 
     const isJest = typeof process !== 'undefined' && !!(process as any).env?.JEST_WORKER_ID;
     if (Platform.OS === 'ios' && !isJest) {
@@ -48,30 +49,28 @@ export class TrezorBridge {
 
     this.log('Preparing native USB transport (no browser)…');
 
-    // Pre-wait gating: if no device is present, poll until one appears (up to waitForPresenceMs)
-    try {
-      const present = (typeof (process as any)?.env?.JEST_WORKER_ID !== 'undefined')
-        ? true
-        : await this.waitForDevicePresence(waitForPresenceMs, presencePollMs, presenceStableCount);
-      if (!present) {
-        this.log('No device detected during presence wait');
-      } else {
-        this.log(`Device presence confirmed (${presenceStableCount} polls); debouncing 500ms`);
-        await this.simulateDelay(500);
-      }
-    } catch {}
-
     let lastErr: unknown = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         this.log(`Attempt ${attempt}/${maxAttempts}: locate device`);
         if (!TrezorUSB.isSupported()) throw new Error('Native USB not supported');
-        let devices = await TrezorUSB.list();
+        
+        // Wait longer for device to appear and stabilize when locked
+        const found = await this.waitForDevicePresence(
+          attempt === 1 ? waitForPresenceMs : Math.max(10000, attemptDelayMs * 5), 
+          presencePollMs, 
+          presenceStableCount
+        );
+        if (!found) {
+          this.log(`Attempt ${attempt}: No device detected during presence wait`);
+          throw new Error('No Trezor device found');
+        }
+        this.log(`Device presence confirmed; debouncing 500ms`);
+        await this.simulateDelay(500);
+        
+        const devices = await TrezorUSB.list();
         if (!devices.length) {
-          // If device not present at this exact moment, briefly poll before failing this attempt
-          await this.waitForDevicePresence(2000, Math.min(250, presencePollMs), 1);
-          devices = await TrezorUSB.list();
-          if (!devices.length) throw new Error('No Trezor device found');
+          throw new Error('No Trezor device found after presence confirmed');
         }
         const dev = devices[0];
         this.log(`Selecting device vid=${dev.vendorId} pid=${dev.productId} name=${dev.deviceName ?? '-'} for attempt ${attempt}`);
@@ -93,7 +92,7 @@ export class TrezorBridge {
         // Allow device time to settle before first handshake
         await this.simulateDelay(200);
         this.log('Handshake (Initialize → Features)');
-        await this.handshake(8000);
+        await this.handshake(15000);
         this.log('Exchanging messages (public key request)');
         const addressN = bip32Path(SOL_DERIVATION_PATH);
         const payload = encodeSolanaGetPublicKey(addressN, false);
@@ -104,38 +103,32 @@ export class TrezorBridge {
         while (guard++ < 6 && !keyB58) {
           const { msgType: respType, payload: respPayload } = await sendAndReceive(TrezorUSB.exchange, msgType, payload, 8000);
           this.log(`Recv type=${respType} bytes=${respPayload.length}`);
+          // If we failed to parse a proper header, do not attempt to decode as SolanaPublicKey.
+          if (respType === 0) {
+            this.log('Unknown/partial message; waiting for next response');
+            continue;
+          }
           if (respType === TrezorBridge.MSG.PASSPHRASE_REQUEST) {
-            // Prompt user to enter passphrase on host (Safe 3 has no keyboard). Empty means standard wallet.
-            if (this.getPassphrase) {
-              this.log('Passphrase requested; prompting user for host entry');
-              const pw = await this.getPassphrase();
-              if (pw == null) throw new Error('Passphrase entry cancelled');
-              const ack = encodePassphraseAckHost(pw);
-              await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, ack, 8000);
-            } else {
-              this.log('Passphrase requested; no provider available, sending empty for standard wallet');
-              const empty = encodePassphraseAckHost("");
-              await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, empty, 8000);
+            // Trezor Safe 3 and newer models require host-based passphrase entry
+            if (!this.getPassphrase) {
+              throw new Error('Passphrase required but no passphrase UI is wired');
             }
+            this.log('Passphrase requested; prompting user for host entry');
+            const pw = await this.getPassphrase();
+            if (pw == null) throw new Error('Passphrase entry cancelled');
+            const ack = encodePassphraseAckHost(pw);
+            this.log('Sending PassphraseAck with host entry');
+            await sendOnly(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, ack);
+            this.log('PassphraseAck sent, waiting for device response');
             continue;
           }
           if (respType === TrezorBridge.MSG.BUTTON_REQUEST) {
             this.log('Button requested; sending ButtonAck');
-            await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.BUTTON_ACK, new Uint8Array(), 8000);
+            await sendOnly(TrezorUSB.exchange, TrezorBridge.MSG.BUTTON_ACK, new Uint8Array());
             continue;
           }
           if (respType === TrezorBridge.MSG.FAILURE) {
-            // If device failed after empty passphrase, prompt user for passphrase if provider exists
-            if (this.getPassphrase) {
-              this.log('Device Failure after empty passphrase; prompting for host passphrase');
-              const pw = await this.getPassphrase();
-              if (pw == null) throw new Error('Passphrase entry cancelled');
-              const ack = encodePassphraseAckHost(pw);
-              await sendAndReceive(TrezorUSB.exchange, TrezorBridge.MSG.PASSPHRASE_ACK, ack, 8000);
-              // retry fetching pubkey
-              continue;
-            }
-            throw new Error('Device Failure; passphrase may be required');
+            throw new Error('Device Failure; action was rejected or passphrase incorrect');
           }
           const { public_key } = decodeSolanaPublicKey(respPayload);
           const keyBytes = public_key ?? new Uint8Array();
@@ -197,7 +190,7 @@ export class TrezorBridge {
         }
       }
       this.log(`Handshake: recv type=${msgType} bytes=${resp.length}`);
-      // Try decode to ensure it's a valid response; tolerate Success/Features/etc.
+      // Try decode with adapter to validate response (best-effort)
       try { decodeToObject(msgType, resp); } catch {}
       this.log('Handshake OK');
     } catch (e: any) {
@@ -226,10 +219,19 @@ export class TrezorBridge {
   }
 }
 
+async function sendOnly(
+  exchange: (bytes: number[], timeout: number) => Promise<number[]>,
+  msgType: number,
+  payload: Uint8Array,
+  timeoutMs = 2000,
+) {
+  const frames = encodeMessage(msgType, payload);
+  for (const f of frames) {
+    await exchange(Array.from(f), timeoutMs);
+  }
+}
+
 function toBase58(bytes: Uint8Array): string {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const bs58 = require('bs58');
-  // bs58 accepts Uint8Array directly; avoid Buffer in RN
   return bs58.encode(bytes);
 }
 
@@ -246,6 +248,7 @@ function encodePassphraseAckHost(passphrase: string): Uint8Array {
   out.push((2 << 3) | 0, 0);
   return Uint8Array.from(out);
 }
+
 function writeVarint(out: number[], v: number) {
   while (v > 0x7f) { out.push((v & 0x7f) | 0x80); v >>>= 7; }
   out.push(v);

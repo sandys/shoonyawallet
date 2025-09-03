@@ -5,6 +5,7 @@ export const REPORT_SIZE = 64;
 type HIDReportMode = 'standard' | 'leadingZero';
 type TransportMode = 'hid' | 'vendor';
 let hidReportMode: HIDReportMode = 'standard';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 let transportMode: TransportMode = 'hid';
 
 export function setHIDReportMode(mode: HIDReportMode) {
@@ -14,7 +15,9 @@ export function setHIDReportMode(mode: HIDReportMode) {
 export function setTransportMode(mode: TransportMode) {
   transportMode = mode;
 }
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const HDR_FIRST = new Uint8Array([0x3f, 0x23, 0x23]); // '?##' first-frame
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const HDR_NEXT = new Uint8Array([0x3f, 0x2b, 0x2b]);  // '?++' continuation
 
 type Header = { msgType: number; payloadLen: number; headerLen: number; format: 'A' | 'B' };
@@ -158,6 +161,7 @@ export async function sendAndReceive(
   // Read until full payload assembled
   const received: Uint8Array[] = [];
   let header: Header | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let totalPayload = 0;
   const maxFrames = 256;
   for (let i = 0; i < maxFrames; i++) {

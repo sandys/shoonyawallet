@@ -27,14 +27,9 @@ jobs:
           key: ${{ runner.os }}-npm-${{ hashFiles('mobile/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-npm-
-      - name: Install NPM dependencies
+      - name: Install NPM dependencies (strict)
         working-directory: ./mobile
-        run: |
-          if [ -f package-lock.json ]; then \
-            npm ci || (echo "npm ci failed; falling back to npm install" && npm install); \
-          else \
-            npm install; \
-          fi
+        run: npm ci
       - name: Generate Trezor descriptor.json for tests
         working-directory: ./mobile
         run: |
@@ -94,14 +89,9 @@ jobs:
           key: ${{ runner.os }}-npm-${{ hashFiles('mobile/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-npm-
-      - name: Install NPM dependencies
+      - name: Install NPM dependencies (strict)
         working-directory: ./mobile
-        run: |
-          if [ -f package-lock.json ]; then \
-            npm ci || (echo "npm ci failed; falling back to npm install" && npm install); \
-          else \
-            npm install; \
-          fi
+        run: npm ci
       - name: Generate Trezor descriptor.json from vendored protos
         working-directory: ./mobile
         run: |
