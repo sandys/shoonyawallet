@@ -17,7 +17,7 @@
     "react": "19.1.0",
     "react-native": "0.81.1",
     "react-native-webview": "^13.10.2",
-    "react-native-static-server": "^0.5.1",
+    "react-native-static-server": "^0.5.0",
     "react-native-fs": "^2.20.0",
     "react-native-inappbrowser-reborn": "^3.7.0",
     "@react-native/new-app-screen": "0.81.1",
