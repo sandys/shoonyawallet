@@ -23,26 +23,39 @@ class ChromeTabsModule(private val reactContext: ReactApplicationContext) : Reac
       // Set up Partial Custom Tabs (bottom sheet mode) when supported
       if (heightPx > 0) {
         try {
+          // This is the key method for partial CCT - it should be available in androidx.browser 1.8+
           builder.setInitialActivityHeightPx(heightPx)
           Log.d("ChromeTabsModule", "Set initial height: $heightPx")
           
-          // Enable resizable behavior for partial CCT  
+          // Try to set additional properties using reflection (graceful degradation)
           try {
-            builder.setActivityResizeBehavior(CustomTabsIntent.ACTIVITY_HEIGHT_ADJUSTABLE)
-            Log.d("ChromeTabsModule", "Set resizable behavior")
+            // These methods might not exist in all versions, so use reflection
+            val builderClass = builder::class.java
+            
+            // Try to set resizable behavior
+            try {
+              val method = builderClass.getMethod("setActivityResizeBehavior", Int::class.java)
+              method.invoke(builder, 2) // ACTIVITY_HEIGHT_ADJUSTABLE
+              Log.d("ChromeTabsModule", "Set resizable behavior")
+            } catch (e: NoSuchMethodException) {
+              Log.d("ChromeTabsModule", "setActivityResizeBehavior not available")
+            }
+            
+            // Try to set close button position  
+            try {
+              val method = builderClass.getMethod("setCloseButtonPosition", Int::class.java)
+              method.invoke(builder, 1) // CLOSE_BUTTON_POSITION_END
+              Log.d("ChromeTabsModule", "Set close button position")
+            } catch (e: NoSuchMethodException) {
+              Log.d("ChromeTabsModule", "setCloseButtonPosition not available")
+            }
+            
           } catch (e: Exception) { 
-            Log.w("ChromeTabsModule", "Failed to set resize behavior: ${e.message}")
-          }
-
-          // Set close button position
-          try {
-            builder.setCloseButtonPosition(CustomTabsIntent.CLOSE_BUTTON_POSITION_END)
-            Log.d("ChromeTabsModule", "Set close button position")
-          } catch (e: Exception) { 
-            Log.w("ChromeTabsModule", "Failed to set close button: ${e.message}")
+            Log.w("ChromeTabsModule", "Failed to set advanced CCT properties: ${e.message}")
           }
         } catch (e: Throwable) { 
           Log.w("ChromeTabsModule", "Partial CCT not supported: ${e.message}")
+          throw e
         }
       }
 
