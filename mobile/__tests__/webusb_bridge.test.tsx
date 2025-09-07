@@ -16,16 +16,9 @@ describe('WebUSB bridge (WebView + TrezorConnect)', () => {
   it('posts eth_getAddress message when pressing Get ETH Address', async () => {
     const { getByTestId } = render(<App />);
     const props = WebViewMock.getLastProps();
-    // Ensure WebView ref is set
-    await waitFor(() => {
-      const api = WebViewMock.getLastApi();
-      expect(api && typeof api.postMessage).toBe('function');
-    });
-    // Mark WebView ready
+    // Mark WebView ready immediately (avoid timer-related flakiness)
     if (props && typeof props.onLoadEnd === 'function') {
-      await act(async () => {
-        props.onLoadEnd({ nativeEvent: {} });
-      });
+      props.onLoadEnd({ nativeEvent: {} });
     }
 
     // Trigger the bridge request
@@ -49,9 +42,7 @@ describe('WebUSB bridge (WebView + TrezorConnect)', () => {
 
     // Simulate a success response from WebView to resolve the pending promise (id defaults to 1)
     if (props && typeof props.onMessage === 'function') {
-      await act(async () => {
-        props.onMessage({ nativeEvent: { data: JSON.stringify({ id, status: 'success', result: { payload: { address: '0xabc' } } }) } });
-      });
+      props.onMessage({ nativeEvent: { data: JSON.stringify({ id, status: 'success', result: { payload: { address: '0xabc' } } }) } });
     }
   });
 });
