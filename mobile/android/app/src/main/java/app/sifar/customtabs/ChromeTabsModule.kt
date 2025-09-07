@@ -1,6 +1,5 @@
 package app.sifar.customtabs
 
-import android.app.Activity
 import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
 import com.facebook.react.bridge.ReactApplicationContext
@@ -12,7 +11,6 @@ class ChromeTabsModule(private val reactContext: ReactApplicationContext) : Reac
 
   @ReactMethod
   fun open(url: String, heightPx: Int) {
-    val activity: Activity? = currentActivity ?: return
     val builder = CustomTabsIntent.Builder()
       .setShowTitle(false)
       .setUrlBarHidingEnabled(true)
@@ -26,7 +24,6 @@ class ChromeTabsModule(private val reactContext: ReactApplicationContext) : Reac
     }
 
     val customTabsIntent = builder.build()
-    customTabsIntent.launchUrl(activity, Uri.parse(url))
+    customTabsIntent.launchUrl(reactContext, Uri.parse(url))
   }
 }
-
