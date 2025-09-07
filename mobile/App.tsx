@@ -229,24 +229,13 @@ export default function App() {
     return new Promise<any>(async (resolve, reject) => {
       cctPending.current = { action, resolve, reject };
       try {
-        // Prefer embedded partial-height Custom Tab if available
+        // Require partial Custom Tab for proper UX
         const launched = await openPartialCustomTab(url, 0.5);
         if (!launched) {
-          const available = await InAppBrowser.isAvailable();
-          if (available) {
-            await InAppBrowser.open(url, {
-              showTitle: false,
-              enableUrlBarHiding: true,
-              enableDefaultShare: false,
-              forceCloseOnRedirection: false,
-              toolbarColor: '#111827',
-              secondaryToolbarColor: '#1f2937',
-              animations: { start: 'slide_in_up', end: 'slide_out_down' } as any,
-            });
-          } else {
-            await Linking.openURL(url);
-          }
+          logError('Partial CCT not available - this is required for proper UX');
+          throw new Error('Partial Custom Tabs not supported on this device. Please update Chrome or your Android system.');
         }
+        logInfo('Using partial CCT (embedded)');
       } catch (e: any) {
         const msg = e?.message ?? String(e);
         logError(`CCT open failed: ${msg}`);
@@ -273,7 +262,7 @@ export default function App() {
       const url = `${page}?${q.toString()}`;
       logInfo(`Opening CCT (address list): ${url}`);
       await new Promise<void>(async (resolve, reject) => {
-        cctPending.current = { action: 'eth_getAddress', resolve: (res: any) => { try {
+        cctPending.current = { action: 'eth_getAddressList', resolve: (res: any) => { try {
           const list: string[] = res?.payload?.addresses || res?.addresses || [];
           if (Array.isArray(list)) {
             setAddrList(list);
@@ -283,18 +272,14 @@ export default function App() {
           }
         } catch (e) { logError(`Address parse failed: ${String(e)}`); } finally { resolve(); } }, reject } as any;
         try {
-          const available = await InAppBrowser.isAvailable();
-          if (available) {
-            await InAppBrowser.open(url, {
-              showTitle: true,
-              enableUrlBarHiding: false,
-              enableDefaultShare: false,
-              forceCloseOnRedirection: false,
-              toolbarColor: '#111827',
-              secondaryToolbarColor: '#1f2937',
-            });
+          // Try partial Custom Tab first (embedded)
+          const launched = await openPartialCustomTab(url, 0.4);
+          if (!launched) {
+            logError('Partial CCT not available - this is required for proper UX');
+            logError('Full-screen browser would block React Native UI');
+            throw new Error('Partial Custom Tabs not supported on this device. Please update Chrome or your Android system.');
           } else {
-            await Linking.openURL(url);
+            logInfo('Using partial CCT (embedded)');
           }
         } catch (e) {
           cctPending.current = null; reject(e);
@@ -720,6 +705,24 @@ const trezorHandlerHtml = `<!DOCTYPE html>
         try{
           let result;
           if (action==='eth_getAddress') result = await TrezorConnect.ethereumGetAddress(payload);
+          else if (action==='eth_getAddressList') {
+            // Handle address list request by making multiple getAddress calls
+            var pathPrefix = payload.pathPrefix || "m/44'/60'/0'/0/";
+            var start = payload.start || 0;
+            var count = Math.min(payload.count || 5, 20); // max 20 addresses
+            var showOnTrezor = !!payload.showOnTrezor;
+            var addresses = [];
+            for (var i = 0; i < count; i++) {
+              var path = pathPrefix + (start + i);
+              var res = await TrezorConnect.ethereumGetAddress({path: path, showOnTrezor: showOnTrezor});
+              if (res && res.success && res.payload && res.payload.address) {
+                addresses.push(res.payload.address);
+              } else {
+                throw new Error('Failed to get address at index ' + (start + i) + ': ' + (res && res.payload && res.payload.error || 'Unknown'));
+              }
+            }
+            result = {success: true, payload: {addresses: addresses}};
+          }
           else if (action==='eth_signTransaction') result = await TrezorConnect.ethereumSignTransaction(payload);
           else if (action==='getFeatures') result = await TrezorConnect.getFeatures();
           else throw new Error('Unsupported action: '+action);
