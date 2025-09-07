@@ -4,6 +4,10 @@ import { View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, Scr
 import Clipboard from '@react-native-clipboard/clipboard';
 import type { WebViewMessageEvent } from 'react-native-webview';
 import { WebView } from 'react-native-webview';
+import InAppBrowser from 'react-native-inappbrowser-reborn';
+import RNFS from 'react-native-fs';
+import StaticServer from 'react-native-static-server';
+import { Linking } from 'react-native';
 
 type Phase = 'idle' | 'connecting' | 'ready' | 'error';
 
@@ -17,6 +21,10 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [ethAddress, setEthAddress] = useState<string | null>(null);
+  const [addrPrefix, setAddrPrefix] = useState<string>("m/44'/60'/0'/0/");
+  const [addrStart, setAddrStart] = useState<string>('0');
+  const [addrCount, setAddrCount] = useState<string>('5');
+  const [addrList, setAddrList] = useState<string[]>([]);
   const [showPermissionHelp, setShowPermissionHelp] = useState(false);
   const [webviewReady, setWebviewReady] = useState(false);
   const readyWaiters = useRef<Array<() => void>>([]);
@@ -24,6 +32,9 @@ export default function App() {
   const webviewRef = useRef<WebView>(null);
   const reqId = useRef(1);
   const pending = useRef(new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>());
+  const cctPending = useRef<{ action: string; resolve: (v: any)=>void; reject: (e:any)=>void } | null>(null);
+
+  const serverRef = useRef<{ server: StaticServer | null; baseUrl: string | null; ready: boolean }>({ server: null, baseUrl: null, ready: false });
 
   const MAX_LOGS = 2000;
   const log = useCallback((msg: string) => {
@@ -139,9 +150,174 @@ export default function App() {
     }
   };
 
+  // ---------- Chrome Custom Tab + Localhost server flow ----------
+  const TREZOR_PAGE_NAME = 'trezor.html';
+  const CALLBACK_URL = 'sifar://trezor-callback';
+
+  const ensureLocalServer = useCallback(async (): Promise<string> => {
+    if (serverRef.current.ready && serverRef.current.baseUrl) return serverRef.current.baseUrl;
+    try {
+      const root = `${RNFS.DocumentDirectoryPath}/trezor_handler`;
+      await RNFS.mkdir(root).catch(() => {});
+      const filePath = `${root}/${TREZOR_PAGE_NAME}`;
+      await RNFS.writeFile(filePath, trezorHandlerHtml, 'utf8');
+      const server = new StaticServer(0, root, { localOnly: true });
+      const rawUrl = await server.start();
+      let baseUrl = rawUrl;
+      try { const u = new URL(rawUrl); baseUrl = `http://localhost:${u.port}`; } catch (_) {}
+      serverRef.current = { server, baseUrl, ready: true };
+      logInfo(`Local server started at ${baseUrl} (raw=${rawUrl})`);
+      return baseUrl;
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      logError(`Failed to start local server: ${msg}`);
+      throw e;
+    }
+  }, [logInfo, logError]);
+
+  const onDeepLink = useCallback((event: { url: string }) => {
+    try {
+      const url = event.url || '';
+      logInfo(`Deep link: ${url}`);
+      const u = new URL(url);
+      if (u.protocol !== 'sifar:' || u.host !== 'trezor-callback') return;
+      const status = u.searchParams.get('status') || 'error';
+      const data = u.searchParams.get('data') || '';
+      const pendingAction = cctPending.current;
+      cctPending.current = null;
+      if (!pendingAction) return;
+      if (status === 'success') {
+        try {
+          const decoded = decodeURIComponent(data);
+          const json = JSON.parse(decoded);
+          logInfo(`CCT success for ${pendingAction.action}`);
+          pendingAction.resolve(json);
+        } catch (e: any) {
+          const msg = e?.message ?? String(e);
+          logError(`Failed to parse deep link data: ${msg}`);
+          pendingAction.reject(new Error(msg));
+        }
+      } else {
+        const err = decodeURIComponent(data);
+        logError(`CCT error for ${pendingAction.action}: ${err}`);
+        pendingAction.reject(new Error(err || 'Canceled'));
+      }
+      try { InAppBrowser.close(); } catch (_) {}
+    } catch (e: any) {
+      logError(`onDeepLink error: ${e?.message ?? String(e)}`);
+    }
+  }, [logInfo, logError]);
+
+  useEffect(() => {
+    const sub = Linking.addEventListener('url', onDeepLink);
+    return () => {
+      // @ts-ignore newer RN returns remove() otherwise removeEventListener
+      if (sub && typeof sub.remove === 'function') sub.remove();
+      // legacy cleanup
+      // Linking.removeEventListener?.('url', onDeepLink);
+    };
+  }, [onDeepLink]);
+
+  const openCctFlow = useCallback(async (action: 'eth_getAddress' | 'eth_signTransaction', payload: any) => {
+    const baseUrl = await ensureLocalServer();
+    const page = `${baseUrl.replace(/\/$/, '')}/${TREZOR_PAGE_NAME}`;
+    const q = new URLSearchParams();
+    q.set('action', action);
+    q.set('payload', encodeURIComponent(JSON.stringify(payload || {})));
+    q.set('callback', encodeURIComponent(CALLBACK_URL));
+    const url = `${page}?${q.toString()}`;
+    logInfo(`Opening CCT: ${url}`);
+    return new Promise<any>(async (resolve, reject) => {
+      cctPending.current = { action, resolve, reject };
+      try {
+        const available = await InAppBrowser.isAvailable();
+        if (available) {
+          await InAppBrowser.open(url, {
+            showTitle: true,
+            enableUrlBarHiding: false,
+            enableDefaultShare: false,
+            forceCloseOnRedirection: false,
+            toolbarColor: '#111827',
+            secondaryToolbarColor: '#1f2937',
+          });
+        } else {
+          await Linking.openURL(url);
+        }
+      } catch (e: any) {
+        const msg = e?.message ?? String(e);
+        logError(`CCT open failed: ${msg}`);
+        cctPending.current = null;
+        reject(e);
+      }
+    });
+  }, [ensureLocalServer, logInfo, logError]);
+
+  const fetchAddressesCct = useCallback(async () => {
+    try {
+      const baseUrl = await ensureLocalServer();
+      const page = `${baseUrl.replace(/\/$/, '')}/${TREZOR_PAGE_NAME}`;
+      const payload = {
+        pathPrefix: addrPrefix,
+        start: Math.max(0, parseInt(addrStart || '0', 10) || 0),
+        count: Math.min(20, Math.max(1, parseInt(addrCount || '1', 10) || 1)),
+        showOnTrezor: false,
+      };
+      const q = new URLSearchParams();
+      q.set('action', 'eth_getAddressList');
+      q.set('payload', encodeURIComponent(JSON.stringify(payload)));
+      q.set('callback', encodeURIComponent(CALLBACK_URL));
+      const url = `${page}?${q.toString()}`;
+      logInfo(`Opening CCT (address list): ${url}`);
+      await new Promise<void>(async (resolve, reject) => {
+        cctPending.current = { action: 'eth_getAddress', resolve: (res: any) => { try {
+          const list: string[] = res?.payload?.addresses || res?.addresses || [];
+          if (Array.isArray(list)) {
+            setAddrList(list);
+            logInfo(`Received ${list.length} addresses`);
+          } else {
+            logWarn(`No addresses in response: ${JSON.stringify(res)}`);
+          }
+        } catch (e) { logError(`Address parse failed: ${String(e)}`); } finally { resolve(); } }, reject } as any;
+        try {
+          const available = await InAppBrowser.isAvailable();
+          if (available) {
+            await InAppBrowser.open(url, {
+              showTitle: true,
+              enableUrlBarHiding: false,
+              enableDefaultShare: false,
+              forceCloseOnRedirection: false,
+              toolbarColor: '#111827',
+              secondaryToolbarColor: '#1f2937',
+            });
+          } else {
+            await Linking.openURL(url);
+          }
+        } catch (e) {
+          cctPending.current = null; reject(e);
+        }
+      });
+    } catch (e: any) {
+      logError(`fetchAddressesCct failed: ${e?.message ?? String(e)}`);
+    }
+  }, [ensureLocalServer, addrPrefix, addrStart, addrCount, logInfo, logWarn, logError]);
+
   useEffect(() => {
     log(`App mounted (${Platform.OS})`);
   }, [log]);
+
+  // Auto-probe once WebView is ready to surface transport errors early
+  useEffect(() => {
+    if (!webviewReady) return;
+    (async () => {
+      try {
+        logInfo('Auto probe: getFeatures');
+        const res = await sendToBridge('getFeatures');
+        logInfo(`Probe result: ${JSON.stringify(res)}`);
+      } catch (e: any) {
+        logError(`Probe failed: ${e?.message ?? String(e)}`);
+      }
+    })();
+  }, [webviewReady, sendToBridge, logInfo, logError]);
 
   return (
     <SafeAreaProvider>
@@ -157,9 +333,77 @@ export default function App() {
           <Text style={styles.help}>
             Connect your Trezor via USB-OTG. Grant USB access if prompted.
           </Text>
+          <View style={{ gap: 6 }}>
+            <Text style={styles.subtitle}>Address Discovery (CCT)</Text>
+            <Text style={styles.help}>Path prefix</Text>
+            <Text selectable style={styles.mono}>{addrPrefix}</Text>
+            <View style={styles.btnrow}>
+              <Button title="-" onPress={() => setAddrPrefix("m/44'/60'/0'/0/")} />
+              <Button title="Ledger Live" onPress={() => setAddrPrefix("m/44'/60'/0'/0/")} />
+              <Button title="Legacy" onPress={() => setAddrPrefix("m/44'/60'/0'/")} />
+            </View>
+            <View style={styles.btnrow}>
+              <Text style={styles.help}>Start</Text>
+              <Text selectable style={styles.mono}>{addrStart}</Text>
+              <Button title="0" onPress={() => setAddrStart('0')} />
+              <Button title="5" onPress={() => setAddrStart('5')} />
+            </View>
+            <View style={styles.btnrow}>
+              <Text style={styles.help}>Count</Text>
+              <Text selectable style={styles.mono}>{addrCount}</Text>
+              <Button title="1" onPress={() => setAddrCount('1')} />
+              <Button title="5" onPress={() => setAddrCount('5')} />
+            </View>
+            <Button title="Fetch Addresses (CCT)" onPress={fetchAddressesCct} />
+            {addrList.length > 0 && (
+              <View style={{ marginTop: 6 }}>
+                <Text style={styles.subtitle}>Addresses</Text>
+                {addrList.map((a, i) => (
+                  <View key={i} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                    <Text style={styles.mono}>#{i + Number(addrStart || '0')}</Text>
+                    <Text selectable style={styles.mono}>{a}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
           <View style={styles.btnrow}>
-            <Button accessibilityLabel="get-eth-address" title="Get ETH Address" onPress={() => start()} />
-            <Button accessibilityLabel="sign-sample-tx" title="Sign Sample Tx" onPress={() => signSampleTx()} />
+            <Button accessibilityLabel="get-eth-address" title="Get ETH Address (WV)" onPress={() => start()} />
+            <Button accessibilityLabel="sign-sample-tx" title="Sign Sample Tx (WV)" onPress={() => signSampleTx()} />
+            <Button title="Get ETH Address (CCT)" onPress={async () => {
+              try {
+                const res = await openCctFlow('eth_getAddress', { path: "m/44'/60'/0'/0/0", showOnTrezor: true });
+                const address = res?.payload?.address || res?.address || res?.payload?.addressHex;
+                if (address) {
+                  setEthAddress(address);
+                  logInfo(`CCT address: ${address}`);
+                } else {
+                  logWarn(`CCT response without address: ${JSON.stringify(res)}`);
+                }
+              } catch (e: any) {
+                logError(`CCT getAddress failed: ${e?.message ?? String(e)}`);
+              }
+            }} />
+            <Button title="Sign Tx (CCT)" onPress={async () => {
+              try {
+                const res = await openCctFlow('eth_signTransaction', {
+                  path: "m/44'/60'/0'/0/0",
+                  transaction: {
+                    chainId: 1,
+                    to: '0x000000000000000000000000000000000000dead',
+                    value: '0x16345785d8a0000',
+                    nonce: '0x0',
+                    gasLimit: '0x5208',
+                    maxFeePerGas: '0x59682f00',
+                    maxPriorityFeePerGas: '0x3b9aca00',
+                    data: '0x',
+                  },
+                });
+                logInfo(`CCT sign result: ${JSON.stringify(res)}`);
+              } catch (e: any) {
+                logError(`CCT sign failed: ${e?.message ?? String(e)}`);
+              }
+            }} />
             {(global as any).__TEST__ ? (
               <>
                 <Pressable testID="btnGetAddress" onPress={() => start()} accessibilityRole="button">
@@ -320,7 +564,10 @@ const trezorBridgeHtmlContent = `<!doctype html>
             await TrezorConnect.init({
               connectSrc: 'https://connect.trezor.io/9/',
               manifest: { email: 'support@nullwallet.app', appUrl: 'https://nullwallet.app' },
-              lazyLoad: true,
+              // Embedded WebView specifics
+              popup: false,
+              lazyLoad: false,
+              debug: true,
               transportReconnect: true,
             });
             bridgeLog('info', 'TrezorConnect initialized');
@@ -356,6 +603,19 @@ const trezorBridgeHtmlContent = `<!doctype html>
                     transaction: payload && payload.transaction,
                   });
                   break;
+                case 'eth_getAddressList':
+                  var list = [];
+                  var start = (payload && payload.start) || 0;
+                  var count = (payload && payload.count) || 1;
+                  var prefix = (payload && payload.pathPrefix) || "m/44'\\/60'\\/0'\\/0\\/";
+                  for (var i=0;i<count;i++) {
+                    var p = prefix + String(start+i);
+                    var r = await TrezorConnect.ethereumGetAddress({ path: p, showOnTrezor: !!(payload && payload.showOnTrezor) });
+                    if (r && r.success && r.payload && r.payload.address) list.push(r.payload.address);
+                    else list.push(null);
+                  }
+                  result = { success: true, payload: { addresses: list } };
+                  break;
                 case 'getPublicKey':
                   result = await TrezorConnect.getPublicKey({ path: (payload && payload.path) || "m/44'\/60'\/0'" });
                   break;
@@ -383,5 +643,110 @@ const trezorBridgeHtmlContent = `<!doctype html>
   </head>
   <body>
     <div id=\"app\">Trezor Bridge Ready</div>
+    <script>
+      // CCT handler page: execute based on query params and deep-link result back
+      (function(){
+        try {
+          var params = new URLSearchParams(location.search);
+          var action = params.get('action');
+          var payloadStr = params.get('payload') || '{}';
+          try { payloadStr = decodeURIComponent(payloadStr); } catch(e){}
+          var payload = {}; try { payload = JSON.parse(payloadStr); } catch(e) { console.error('payload parse error', e); }
+          var callback = params.get('callback') || '';
+          console.info('CCT handler: action=', action);
+          if (!action) return;
+          function cb(status, data){
+            if (!callback) { console.warn('No callback provided'); return; }
+            try {
+              var u = new URL(callback);
+              u.searchParams.set('status', status);
+              var dataStr = typeof data === 'string' ? data : JSON.stringify(data || {});
+              u.searchParams.set('data', encodeURIComponent(dataStr));
+              location.replace(u.toString());
+            } catch(e) { console.error('callback build failed', e); }
+          }
+          // Ensure Trezor is initialized (from earlier block)
+          ;(async function(){
+            try {
+              console.info('CCT invoking Trezor action:', action);
+              var result;
+              if (action === 'eth_getAddress') {
+                result = await TrezorConnect.ethereumGetAddress(payload);
+              } else if (action === 'eth_signTransaction') {
+                result = await TrezorConnect.ethereumSignTransaction(payload);
+              } else if (action === 'getFeatures') {
+                result = await TrezorConnect.getFeatures();
+              } else {
+                throw new Error('Unsupported action: '+action);
+              }
+              if (result && result.success) cb('success', result); else cb('error', (result && result.payload && result.payload.error) || 'Unknown');
+            } catch(e){
+              console.error('CCT Trezor call failed', e);
+              cb('error', e && e.message ? e.message : String(e));
+            }
+          })();
+        } catch(e) { console.error('CCT handler error', e); }
+      })();
+    </script>
   </body>
   </html>`;
+
+// Standalone handler HTML for CCT served from localhost (self-contained)
+const trezorHandlerHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>sifar Trezor Handler</title>
+  <script src=\"https://connect.trezor.io/9/trezor-connect.js\"></script>
+  <style> body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,\"Noto Sans\",sans-serif;padding:12px} pre{white-space:pre-wrap;word-break:break-word;background:#f3f4f6;padding:8px;border-radius:6px} .warn{color:#b45309} .ok{color:#065f46} .err{color:#991b1b}</style>
+</head>
+<body>
+  <h2>sifar – Trezor Handler</h2>
+  <div id=\"st\">Initializing…</div>
+  <pre id=\"lg\"></pre>
+  <script>
+    var st = document.getElementById('st');
+    var lg = document.getElementById('lg');
+    function log(m){ try{ lg.textContent += m + "\n"; }catch(e){} }
+    function set(m, cls){ st.textContent = m; st.className = cls||''; }
+    function bridgeLog(level, msg){ log('['+level.toUpperCase()+'] '+msg); }
+    window.onerror = function(message, source, lineno, colno, error){ bridgeLog('error', 'onerror: '+message+' @'+source+':'+lineno+':'+colno); };
+    window.addEventListener('unhandledrejection', function(e){ bridgeLog('error', 'unhandledrejection: '+(e && e.reason && (e.reason.message||e.reason) || '')); });
+    (async function(){
+      try{
+        bridgeLog('info', 'userAgent: '+navigator.userAgent);
+        await TrezorConnect.init({
+          popup: false,
+          lazyLoad: false,
+          debug: true,
+          manifest: { email: 'support@nullwallet.app', appUrl: 'https://nullwallet.app' },
+        });
+        bridgeLog('info', 'TrezorConnect initialized');
+        set('Ready', 'ok');
+      }catch(e){ set('Init error: '+(e && e.message || e), 'err'); log(String(e && e.stack || e)); }
+      // Execute based on query
+      try{
+        var q = new URLSearchParams(location.search);
+        var action = q.get('action');
+        var payloadStr = q.get('payload')||'{}';
+        try{ payloadStr = decodeURIComponent(payloadStr);}catch(e){}
+        var payload = {}; try{ payload = JSON.parse(payloadStr);}catch(e){ bridgeLog('warn','payload parse fail: '+e); }
+        var callback = q.get('callback')||'';
+        bridgeLog('info', 'action='+action);
+        function finish(status, data){ try{ var u=new URL(callback); u.searchParams.set('status',status); var ds= typeof data==='string'?data:JSON.stringify(data||{}); u.searchParams.set('data', encodeURIComponent(ds)); location.replace(u.toString()); }catch(e){ bridgeLog('error','callback build failed: '+e);} }
+        if (!action) return;
+        try{
+          let result;
+          if (action==='eth_getAddress') result = await TrezorConnect.ethereumGetAddress(payload);
+          else if (action==='eth_signTransaction') result = await TrezorConnect.ethereumSignTransaction(payload);
+          else if (action==='getFeatures') result = await TrezorConnect.getFeatures();
+          else throw new Error('Unsupported action: '+action);
+          log('Result: '+JSON.stringify(result));
+          if (result && result.success) finish('success', result); else finish('error', (result && result.payload && result.payload.error)||'Unknown');
+        }catch(e){ bridgeLog('error','call failed: '+e); finish('error', e && e.message ? e.message : String(e)); }
+      }catch(e){ bridgeLog('error','handler crash: '+e); }
+    })();
+  </script>
+</body>
+</html>`;
