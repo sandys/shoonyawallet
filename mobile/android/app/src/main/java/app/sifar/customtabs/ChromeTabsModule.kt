@@ -19,26 +19,41 @@ class ChromeTabsModule(private val reactContext: ReactApplicationContext) : Reac
         .setShowTitle(false)
         .setUrlBarHidingEnabled(true)
         .setShareState(CustomTabsIntent.SHARE_STATE_OFF)
+        .setStartAnimations(reactContext, android.R.anim.slide_in_left, android.R.anim.slide_out_right)
+        .setExitAnimations(reactContext, android.R.anim.slide_in_left, android.R.anim.slide_out_right)
 
       // Set up Partial Custom Tabs (bottom sheet mode) when supported
       if (heightPx > 0) {
         try {
-          // This is the key method for partial CCT - it should be available in androidx.browser 1.8+
-          builder.setInitialActivityHeightPx(heightPx)
-          Log.d("ChromeTabsModule", "Set initial height: $heightPx")
+          // Force partial height behavior - key for embedded CCT
+          val displayMetrics = reactContext.resources.displayMetrics
+          val actualHeightPx = if (heightPx > displayMetrics.heightPixels) {
+            (displayMetrics.heightPixels * 0.6).toInt() // Max 60% of screen
+          } else {
+            heightPx
+          }
+          
+          builder.setInitialActivityHeightPx(actualHeightPx)
+          Log.d("ChromeTabsModule", "Set initial height: $actualHeightPx (requested: $heightPx)")
           
           // Try to set additional properties using reflection (graceful degradation)
           try {
-            // These methods might not exist in all versions, so use reflection
             val builderClass = builder::class.java
             
-            // Try to set resizable behavior
+            // Try to set resizable behavior - this is CRITICAL for partial CCT
             try {
               val method = builderClass.getMethod("setActivityResizeBehavior", Int::class.java)
               method.invoke(builder, 2) // ACTIVITY_HEIGHT_ADJUSTABLE
-              Log.d("ChromeTabsModule", "Set resizable behavior")
+              Log.d("ChromeTabsModule", "Set resizable behavior: ADJUSTABLE")
             } catch (e: NoSuchMethodException) {
-              Log.d("ChromeTabsModule", "setActivityResizeBehavior not available")
+              // Try alternative constant values
+              try {
+                val method = builderClass.getMethod("setActivityResizeBehavior", Int::class.java) 
+                method.invoke(builder, 1) // Try different constant
+                Log.d("ChromeTabsModule", "Set resizable behavior: fallback")
+              } catch (e2: Exception) {
+                Log.d("ChromeTabsModule", "setActivityResizeBehavior not available")
+              }
             }
             
             // Try to set close button position  
@@ -50,12 +65,22 @@ class ChromeTabsModule(private val reactContext: ReactApplicationContext) : Reac
               Log.d("ChromeTabsModule", "setCloseButtonPosition not available")
             }
             
+            // Try to set breakpoint behavior for better partial support
+            try {
+              val method = builderClass.getMethod("setActivityBreakpoint", Int::class.java)
+              method.invoke(builder, actualHeightPx)
+              Log.d("ChromeTabsModule", "Set activity breakpoint")
+            } catch (e: Exception) {
+              Log.d("ChromeTabsModule", "setActivityBreakpoint not available")
+            }
+            
           } catch (e: Exception) { 
             Log.w("ChromeTabsModule", "Failed to set advanced CCT properties: ${e.message}")
           }
         } catch (e: Throwable) { 
-          Log.w("ChromeTabsModule", "Partial CCT not supported: ${e.message}")
-          throw e
+          Log.w("ChromeTabsModule", "Partial CCT setup failed: ${e.message}")
+          Log.w("ChromeTabsModule", "Will launch standard CCT instead")
+          // Don't throw - allow standard CCT to launch
         }
       }
 

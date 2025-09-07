@@ -284,6 +284,7 @@ export default function App() {
             setTimeout(() => {
               if (cctPending.current) {
                 logWarn('CCT taking too long - it may have opened full-screen. Try closing the browser manually.');
+                logWarn('If browser is stuck, try pressing the back button or force-closing Chrome.');
               }
             }, 3000);
           }
