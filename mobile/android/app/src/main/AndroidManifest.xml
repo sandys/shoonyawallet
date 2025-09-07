@@ -43,6 +43,14 @@
           <category android:name="android.intent.category.BROWSABLE" />
           <data android:scheme="sifar" android:host="trezor-callback" />
         </intent-filter>
+        
+        <!-- Deep link for @swan-io/react-native-browser auto-close -->
+        <intent-filter>
+          <action android:name="android.intent.action.VIEW" />
+          <category android:name="android.intent.category.DEFAULT" />
+          <category android:name="android.intent.category.BROWSABLE" />
+          <data android:scheme="app.sifar" android:host="close" />
+        </intent-filter>
       </activity>
     </application>
 </manifest>

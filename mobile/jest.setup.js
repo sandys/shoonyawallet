@@ -176,3 +176,14 @@ jest.mock('@swan-io/react-native-browser', () => ({
   openBrowser: jest.fn(async () => {}),
   closeBrowser: jest.fn(() => {}),
 }));
+
+jest.mock('url-parse', () => {
+  return jest.fn((url, parseQuery) => {
+    const mockUrl = new URL(url);
+    return {
+      protocol: mockUrl.protocol,
+      host: mockUrl.host,
+      query: parseQuery ? Object.fromEntries(mockUrl.searchParams) : mockUrl.search,
+    };
+  });
+});

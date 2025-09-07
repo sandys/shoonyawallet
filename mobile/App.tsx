@@ -8,6 +8,7 @@ import { openBrowser, closeBrowser } from '@swan-io/react-native-browser';
 import StaticServer from '@dr.pogodin/react-native-static-server';
 import { DocumentDirectoryPath, mkdir, writeFile } from '@dr.pogodin/react-native-fs';
 import { Linking } from 'react-native';
+import parseUrl from 'url-parse';
 
 type Phase = 'idle' | 'connecting' | 'ready' | 'error';
 
@@ -151,7 +152,7 @@ export default function App() {
 
   // ---------- Chrome Custom Tab + Localhost server flow ----------
   const TREZOR_PAGE_NAME = 'trezor.html';
-  const CALLBACK_URL = 'sifar://trezor-callback';
+  const CALLBACK_URL = 'app.sifar://close';
 
   const ensureLocalServer = useCallback(async (): Promise<string> => {
     // Always regenerate server for fresh HTML - remove this line once debugging is done
@@ -186,38 +187,80 @@ export default function App() {
     }
   }, [logInfo, logError]);
 
-  const onDeepLink = useCallback((event: { url: string }) => {
+  const onDeepLink = useCallback(({ url }: { url: string }) => {
     try {
-      const url = event.url || '';
       logInfo(`Deep link: ${url}`);
-      const u = new URL(url);
-      if (u.protocol !== 'sifar:' || u.host !== 'trezor-callback') return;
-      const status = u.searchParams.get('status') || 'error';
-      const data = u.searchParams.get('data') || '';
-      const pendingAction = cctPending.current;
-      cctPending.current = null;
-      if (!pendingAction) return;
-      if (status === 'success') {
-        try {
-          const decoded = decodeURIComponent(data);
-          const json = JSON.parse(decoded);
-          logInfo(`CCT success for ${pendingAction.action}`);
-          pendingAction.resolve(json);
-        } catch (e: any) {
-          const msg = e?.message ?? String(e);
-          logError(`Failed to parse deep link data: ${msg}`);
-          pendingAction.reject(new Error(msg));
+      const { protocol, host, query } = parseUrl(url, true);
+      const origin = `${protocol}//${host}`;
+      
+      // Handle @swan-io browser close URL (following their exact pattern)
+      if (origin === "app.sifar://close") {
+        logInfo('Swan-io browser close URL detected');
+        closeBrowser(); // required on iOS per swan-io docs
+        
+        const pendingAction = cctPending.current;
+        cctPending.current = null;
+        if (!pendingAction) {
+          logWarn('No pending action for browser close');
+          logInfo('Query data received: ' + JSON.stringify(query, null, 2));
+          return;
         }
-      } else {
-        const err = decodeURIComponent(data);
-        logError(`CCT error for ${pendingAction.action}: ${err}`);
-        pendingAction.reject(new Error(err || 'Canceled'));
+        
+        const status = query.status || 'error';
+        const data = query.data || '';
+        
+        if (status === 'success') {
+          try {
+            const decoded = typeof data === 'string' ? decodeURIComponent(data) : JSON.stringify(data);
+            const json = JSON.parse(decoded);
+            logInfo(`Browser success for ${pendingAction.action}`);
+            pendingAction.resolve(json);
+          } catch (e: any) {
+            const msg = e?.message ?? String(e);
+            logError(`Failed to parse browser close data: ${msg}`);
+            pendingAction.reject(new Error(msg));
+          }
+        } else {
+          const err = typeof data === 'string' ? decodeURIComponent(data) : JSON.stringify(data);
+          logError(`Browser error for ${pendingAction.action}: ${err}`);
+          pendingAction.reject(new Error(err || 'Canceled'));
+        }
+        return;
       }
-      try { closeBrowser(); } catch (_) {}
+      
+      // Handle legacy sifar:// URLs for backwards compatibility
+      if (origin === "sifar://trezor-callback") {
+        logInfo('Legacy sifar callback URL detected');
+        const status = query.status || 'error';
+        const data = query.data || '';
+        const pendingAction = cctPending.current;
+        cctPending.current = null;
+        if (!pendingAction) return;
+        if (status === 'success') {
+          try {
+            const decoded = typeof data === 'string' ? decodeURIComponent(data) : JSON.stringify(data);
+            const json = JSON.parse(decoded);
+            logInfo(`Legacy CCT success for ${pendingAction.action}`);
+            pendingAction.resolve(json);
+          } catch (e: any) {
+            const msg = e?.message ?? String(e);
+            logError(`Failed to parse legacy deep link data: ${msg}`);
+            pendingAction.reject(new Error(msg));
+          }
+        } else {
+          const err = typeof data === 'string' ? decodeURIComponent(data) : JSON.stringify(data);
+          logError(`Legacy CCT error for ${pendingAction.action}: ${err}`);
+          pendingAction.reject(new Error(err || 'Canceled'));
+        }
+        try { closeBrowser(); } catch (_) {}
+        return;
+      }
+      
+      logWarn(`Unhandled deep link: ${url} (origin: ${origin})`);
     } catch (e: any) {
       logError(`onDeepLink error: ${e?.message ?? String(e)}`);
     }
-  }, [logInfo, logError]);
+  }, [logInfo, logError, logWarn]);
 
   useEffect(() => {
     const sub = Linking.addEventListener('url', onDeepLink);
@@ -710,31 +753,44 @@ const trezorHandlerHtml = `<!DOCTYPE html>
     window.addEventListener('unhandledrejection', function(e){ bridgeLog('error', 'unhandledrejection: '+(e && e.reason && (e.reason.message||e.reason) || '')); });
     
     function testCallback() {
-      bridgeLog('info', 'Test callback button clicked');
-      set('Test Callback Clicked!', 'ok');
-      
-      var q = new URLSearchParams(location.search);
-      var callback = q.get('callback')||'';
-      bridgeLog('info', 'Callback URL: ' + (callback || 'NONE'));
-      
-      if (callback) {
-        var testData = {message: 'Test callback successful', timestamp: Date.now()};
-        bridgeLog('info', 'Sending test callback with data: ' + JSON.stringify(testData));
-        try {
-          var u = new URL(callback);
-          u.searchParams.set('status', 'success');
-          u.searchParams.set('data', encodeURIComponent(JSON.stringify(testData)));
-          var finalUrl = u.toString();
-          bridgeLog('info', 'Test callback URL: ' + finalUrl.substring(0, 50) + '...');
-          set('Redirecting...', 'warn');
-          location.replace(finalUrl);
-        } catch (e) {
-          bridgeLog('error', 'Test callback failed: ' + e.message);
-          set('Callback failed: ' + e.message, 'err');
+      try {
+        bridgeLog('info', 'Test callback function called');
+        set('Test Callback Clicked!', 'ok');
+        
+        var q = new URLSearchParams(location.search);
+        var callback = q.get('callback')||'';
+        bridgeLog('info', 'Parsed callback URL: ' + (callback ? callback.substring(0, 50) + '...' : 'NONE'));
+        
+        if (callback) {
+          var testData = {message: 'Test callback successful', timestamp: Date.now()};
+          bridgeLog('info', 'Preparing test callback data: ' + JSON.stringify(testData));
+          
+          try {
+            var u = new URL(callback);
+            bridgeLog('info', 'Parsed callback URL object successfully');
+            u.searchParams.set('status', 'success');
+            u.searchParams.set('data', encodeURIComponent(JSON.stringify(testData)));
+            var finalUrl = u.toString();
+            bridgeLog('info', 'Final callback URL length: ' + finalUrl.length);
+            bridgeLog('info', 'Final callback URL start: ' + finalUrl.substring(0, 100));
+            set('Attempting redirect...', 'warn');
+            
+            // Use location.replace immediately for swan-io browser
+            bridgeLog('info', 'Redirecting to close URL...');
+            location.replace(finalUrl);
+            
+          } catch (urlError) {
+            bridgeLog('error', 'URL parsing failed: ' + urlError.message);
+            set('URL parsing failed: ' + urlError.message, 'err');
+          }
+        } else {
+          bridgeLog('error', 'No callback URL found in query params');
+          bridgeLog('info', 'Full query string: ' + location.search);
+          set('No callback URL found', 'err');
         }
-      } else {
-        bridgeLog('error', 'No callback URL found for test');
-        set('No callback URL found', 'err');
+      } catch (mainError) {
+        bridgeLog('error', 'Test callback main error: ' + mainError.message);
+        set('Test callback error: ' + mainError.message, 'err');
       }
     }
     
@@ -743,7 +799,11 @@ const trezorHandlerHtml = `<!DOCTYPE html>
       bridgeLog('info', 'DOM loaded, setting up test button');
       var testBtn = document.getElementById('testBtn');
       if (testBtn) {
-        testBtn.addEventListener('click', testCallback);
+        testBtn.addEventListener('click', function(e) {
+          bridgeLog('info', 'Click event triggered!');
+          e.preventDefault();
+          testCallback();
+        });
         bridgeLog('info', 'Test button click listener added');
       } else {
         bridgeLog('error', 'Test button not found');
@@ -752,10 +812,20 @@ const trezorHandlerHtml = `<!DOCTYPE html>
     
     // Also try immediate setup in case DOM is already loaded
     setTimeout(function() {
+      bridgeLog('info', 'Setting up delayed click listener');
       var testBtn = document.getElementById('testBtn');
-      if (testBtn && !testBtn.onclick) {
-        testBtn.addEventListener('click', testCallback);
-        bridgeLog('info', 'Test button click listener added (delayed)');
+      if (testBtn) {
+        // Remove any existing listeners first
+        testBtn.replaceWith(testBtn.cloneNode(true));
+        testBtn = document.getElementById('testBtn');
+        
+        testBtn.addEventListener('click', function(e) {
+          bridgeLog('info', 'Delayed click event triggered!');
+          e.preventDefault();
+          testCallback();
+        });
+        testBtn.style.border = '2px solid red'; // Visual indicator that handler was added
+        bridgeLog('info', 'Test button click listener added (delayed) with red border');
       }
     }, 100);
     
@@ -814,7 +884,8 @@ const trezorHandlerHtml = `<!DOCTYPE html>
             var ds= typeof data==='string'?data:JSON.stringify(data||{}); 
             u.searchParams.set('data', encodeURIComponent(ds)); 
             var finalUrl = u.toString();
-            bridgeLog('info', 'Redirecting to: ' + finalUrl.substring(0, 100) + '...');
+            bridgeLog('info', 'Redirecting to close URL: ' + finalUrl.substring(0, 100) + '...');
+            set('Closing browser...', 'ok');
             location.replace(finalUrl); 
           }catch(e){ 
             bridgeLog('error','callback build failed: '+e);
