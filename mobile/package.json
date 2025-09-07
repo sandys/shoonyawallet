@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
-    "gen:trezor-descriptor": "pbjs -t json -o src/services/hardware/trezor/protos/descriptor.json src/services/hardware/trezor/protos/options.proto src/services/hardware/trezor/protos/messages-common.proto src/services/hardware/trezor/protos/messages-management.proto src/services/hardware/trezor/protos/messages.proto src/services/hardware/trezor/protos/messages-solana.proto"
+    "gen:trezor-descriptor": "pbjs -t json -o src/services/hardware/trezor/protos/descriptor.json src/services/hardware/trezor/protos/options.proto src/services/hardware/trezor/protos/messages-common.proto src/services/hardware/trezor/protos/messages-management.proto src/services/hardware/trezor/protos/messages.proto src/services/hardware/trezor/protos/messages-solana.proto",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "react": "19.1.0",
@@ -52,7 +53,8 @@
     "@testing-library/react-native": "^12.5.2",
     "@testing-library/jest-native": "^5.0.0",
     "jest-environment-jsdom": "^29.7.0",
-    "protobufjs-cli": "^1.1.1"
+    "protobufjs-cli": "^1.1.1",
+    "patch-package": "^8.0.0"
   },
   "engines": {
     "node": ">=20"
