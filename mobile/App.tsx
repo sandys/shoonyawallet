@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, ScrollView, Pressable } from 'react-native';
+import { View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, ScrollView, Pressable, TextInput } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import type { WebViewMessageEvent } from 'react-native-webview';
 import { WebView } from 'react-native-webview';
 import InAppBrowser from 'react-native-inappbrowser-reborn';
 import StaticServer from '@dr.pogodin/react-native-static-server';
-import RNFS from '@dr.pogodin/react-native-fs';
+import { DocumentDirectoryPath, mkdir, writeFile } from '@dr.pogodin/react-native-fs';
 import { Linking } from 'react-native';
 
 type Phase = 'idle' | 'connecting' | 'ready' | 'error';
@@ -101,7 +101,6 @@ export default function App() {
 
   const start = async () => {
     logInfo('start() called');
-    setLogs([]);
     setError(null);
     setPhase('connecting');
     try {
@@ -157,9 +156,9 @@ export default function App() {
   const ensureLocalServer = useCallback(async (): Promise<string> => {
     if (serverRef.current.ready && serverRef.current.baseUrl) return serverRef.current.baseUrl as string;
     try {
-      const dir = `${RNFS.DocumentDirectoryPath}/trezor_handler`;
-      await RNFS.mkdir(dir).catch(() => {});
-      await RNFS.writeFile(`${dir}/${TREZOR_PAGE_NAME}`, trezorHandlerHtml, 'utf8');
+      const dir = `${DocumentDirectoryPath}/trezor_handler`;
+      await mkdir(dir).catch(() => {});
+      await writeFile(`${dir}/${TREZOR_PAGE_NAME}`, trezorHandlerHtml, 'utf8');
       const server = new StaticServer({ fileDir: dir, hostname: '127.0.0.1', port: 0 });
       const origin = await server.start('Start server');
       let baseUrl = origin;
@@ -326,94 +325,60 @@ export default function App() {
           <Text style={styles.warn}>iOS is not supported for WebUSB/Trezor.</Text>
         )}
         <View style={styles.section}>
-          <Text style={styles.subtitle}>Trezor via WebView + Trezor Connect</Text>
+          <Text style={styles.subtitle}>Trezor (Chrome • WebUSB)</Text>
           <ActivityIndicator size="small" />
           <Text style={styles.status}>Status: {phase}</Text>
           <Text style={styles.help}>
             Connect your Trezor via USB-OTG. Grant USB access if prompted.
           </Text>
-          <View style={{ gap: 6 }}>
-            <Text style={styles.subtitle}>Address Discovery (CCT)</Text>
-            <Text style={styles.help}>Path prefix</Text>
-            <Text selectable style={styles.mono}>{addrPrefix}</Text>
-            <View style={styles.btnrow}>
-              <Button title="-" onPress={() => setAddrPrefix("m/44'/60'/0'/0/")} />
-              <Button title="Ledger Live" onPress={() => setAddrPrefix("m/44'/60'/0'/0/")} />
-              <Button title="Legacy" onPress={() => setAddrPrefix("m/44'/60'/0'/")} />
+          <View style={{ gap: 8 }}>
+            <Text style={styles.subtitle}>Address Discovery</Text>
+            <Text style={styles.help}>Derivation path prefix</Text>
+            <View style={styles.readonlyBox}>
+              <Text selectable style={styles.mono}>{addrPrefix}</Text>
             </View>
             <View style={styles.btnrow}>
-              <Text style={styles.help}>Start</Text>
-              <Text selectable style={styles.mono}>{addrStart}</Text>
-              <Button title="0" onPress={() => setAddrStart('0')} />
-              <Button title="5" onPress={() => setAddrStart('5')} />
+              <Button title="Use Trezor Default" onPress={() => setAddrPrefix("m/44'/60'/0'/0/")} />
             </View>
-            <View style={styles.btnrow}>
-              <Text style={styles.help}>Count</Text>
-              <Text selectable style={styles.mono}>{addrCount}</Text>
-              <Button title="1" onPress={() => setAddrCount('1')} />
-              <Button title="5" onPress={() => setAddrCount('5')} />
+            <View style={{ gap: 6 }}>
+              <Text style={styles.help}>Start index (i in m/44'/60'/0'/0/i)</Text>
+              <TextInput
+                value={addrStart}
+                onChangeText={(v) => setAddrStart((v || '').replace(/[^0-9]/g, ''))}
+                keyboardType="number-pad"
+                inputMode="numeric"
+                placeholder="0"
+                style={styles.input}
+              />
+              <Text style={styles.help}>Count (how many addresses to list)</Text>
+              <TextInput
+                value={addrCount}
+                onChangeText={(v) => setAddrCount((v || '').replace(/[^0-9]/g, ''))}
+                keyboardType="number-pad"
+                inputMode="numeric"
+                placeholder="5"
+                style={styles.input}
+              />
             </View>
-            <Button title="Fetch Addresses (CCT)" onPress={fetchAddressesCct} />
+            <Button title="Fetch Addresses" onPress={fetchAddressesCct} />
             {addrList.length > 0 && (
               <View style={{ marginTop: 6 }}>
                 <Text style={styles.subtitle}>Addresses</Text>
                 {addrList.map((a, i) => (
-                  <View key={i} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <View key={i} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                     <Text style={styles.mono}>#{i + Number(addrStart || '0')}</Text>
-                    <Text selectable style={styles.mono}>{a}</Text>
+                    <View style={styles.readonlyPill}><Text selectable style={styles.mono}>{a}</Text></View>
                   </View>
                 ))}
               </View>
             )}
           </View>
-          <View style={styles.btnrow}>
-            <Button accessibilityLabel="get-eth-address" title="Get ETH Address (WV)" onPress={() => start()} />
-            <Button accessibilityLabel="sign-sample-tx" title="Sign Sample Tx (WV)" onPress={() => signSampleTx()} />
-            <Button title="Get ETH Address (CCT)" onPress={async () => {
-              try {
-                const res = await openCctFlow('eth_getAddress', { path: "m/44'/60'/0'/0/0", showOnTrezor: true });
-                const address = res?.payload?.address || res?.address || res?.payload?.addressHex;
-                if (address) {
-                  setEthAddress(address);
-                  logInfo(`CCT address: ${address}`);
-                } else {
-                  logWarn(`CCT response without address: ${JSON.stringify(res)}`);
-                }
-              } catch (e: any) {
-                logError(`CCT getAddress failed: ${e?.message ?? String(e)}`);
-              }
-            }} />
-            <Button title="Sign Tx (CCT)" onPress={async () => {
-              try {
-                const res = await openCctFlow('eth_signTransaction', {
-                  path: "m/44'/60'/0'/0/0",
-                  transaction: {
-                    chainId: 1,
-                    to: '0x000000000000000000000000000000000000dead',
-                    value: '0x16345785d8a0000',
-                    nonce: '0x0',
-                    gasLimit: '0x5208',
-                    maxFeePerGas: '0x59682f00',
-                    maxPriorityFeePerGas: '0x3b9aca00',
-                    data: '0x',
-                  },
-                });
-                logInfo(`CCT sign result: ${JSON.stringify(res)}`);
-              } catch (e: any) {
-                logError(`CCT sign failed: ${e?.message ?? String(e)}`);
-              }
-            }} />
-            {(global as any).__TEST__ ? (
-              <>
-                <Pressable testID="btnGetAddress" onPress={() => start()} accessibilityRole="button">
-                  <Text style={styles.mono}>[TEST] Get ETH Address</Text>
-                </Pressable>
-                <Pressable testID="btnSignSample" onPress={() => signSampleTx()} accessibilityRole="button">
-                  <Text style={styles.mono}>[TEST] Sign Sample Tx</Text>
-                </Pressable>
-              </>
-            ) : null}
-          </View>
+          {/* Test-only trigger to exercise WV bridge during Jest */}
+          {(global as any).__TEST__ ? (
+            <Pressable testID="btnGetAddress" onPress={() => start()} accessibilityRole="button">
+              <Text style={styles.mono}>[TEST] Get ETH Address</Text>
+            </Pressable>
+          ) : null}
           {!!error && (
             <Text style={styles.error}>Error: {error}</Text>
           )}
@@ -519,6 +484,17 @@ const styles = StyleSheet.create({
   error: { color: '#b00020' },
   btnrow: { flexDirection: 'row', gap: 8 },
   mono: { fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }), fontSize: 12 },
+  readonlyBox: { borderWidth: 1, borderColor: '#ddd', borderRadius: 6, padding: 8, backgroundColor: '#f7f7fa' },
+  readonlyPill: { borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 4, paddingVertical: 4, paddingHorizontal: 6, backgroundColor: '#f9fafb' },
+  input: {
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    fontSize: 14,
+    backgroundColor: '#fff',
+  },
   logs: { flex: 1, borderTopWidth: StyleSheet.hairlineWidth, borderColor: '#ddd', paddingTop: 8 },
   logScroll: { flex: 1 },
   logContent: { paddingBottom: 16 },
