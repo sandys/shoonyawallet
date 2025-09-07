@@ -1,4 +1,4 @@
-package com.mobile
+package app.sifar
 
 import android.app.Application
 import com.facebook.react.PackageList
@@ -9,7 +9,7 @@ import com.facebook.react.ReactNativeHost
 import com.facebook.react.ReactPackage
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.facebook.react.defaults.DefaultReactNativeHost
-import com.shoonyawallet.usb.TrezorUsbPackage
+import app.sifar.usb.TrezorUsbPackage
 
 class MainApplication : Application(), ReactApplication {
 
@@ -36,3 +36,4 @@ class MainApplication : Application(), ReactApplication {
     loadReactNative(this)
   }
 }
+

@@ -119,7 +119,7 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.root}>
-        <Text style={styles.title}>NullWallet (Android • WebUSB)</Text>
+        <Text style={styles.title}>sifar</Text>
         {Platform.OS === 'ios' && (
           <Text style={styles.warn}>iOS is not supported for WebUSB/Trezor.</Text>
         )}

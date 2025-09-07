@@ -12,7 +12,7 @@
       android:theme="@style/AppTheme"
       android:supportsRtl="true">
 
-      <receiver android:name="com.shoonyawallet.usb.UsbAttachReceiver"
+      <receiver android:name="app.sifar.usb.UsbAttachReceiver"
         android:exported="true">
         <intent-filter>
           <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />

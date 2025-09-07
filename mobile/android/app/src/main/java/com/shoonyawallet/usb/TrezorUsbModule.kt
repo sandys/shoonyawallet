@@ -1,4 +1,4 @@
-package com.shoonyawallet.usb
+package app.sifar.usb
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -19,7 +19,7 @@ import android.util.Log
 import android.os.SystemClock
 
 class TrezorUsbModule(private val reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
-    private val ACTION_USB_PERMISSION = "com.shoonyawallet.USB_PERMISSION"
+    private val ACTION_USB_PERMISSION = "app.sifar.USB_PERMISSION"
     private var connection: UsbDeviceConnection? = null
     private var iface: UsbInterface? = null
     private var inEndpoint: UsbEndpoint? = null

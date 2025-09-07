@@ -1,4 +1,4 @@
-package com.shoonyawallet.usb
+package app.sifar.usb
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -18,4 +18,3 @@ class UsbAttachReceiver : BroadcastReceiver() {
         }
     }
 }
-

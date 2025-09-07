@@ -1,4 +1,4 @@
-package com.shoonyawallet.usb
+package app.sifar.usb
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
@@ -11,4 +11,3 @@ class TrezorUsbPackage : ReactPackage {
 
     override fun createViewManagers(reactContext: ReactApplicationContext): MutableList<ViewManager<*, *>> = mutableListOf()
 }
-
