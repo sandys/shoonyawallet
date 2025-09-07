@@ -19,3 +19,35 @@ buildscript {
 }
 
 apply plugin: "com.facebook.react.rootproject"
+
+// Ensure legacy libraries without explicit SDK declarations still build under AGP 8+
+subprojects { subproject ->
+    afterEvaluate {
+        def hasAndroid = subproject.plugins.hasPlugin('com.android.library') || subproject.plugins.hasPlugin('com.android.application')
+        if (!hasAndroid) { return }
+        def androidExt = subproject.extensions.findByName('android')
+        if (androidExt != null) {
+            try {
+                if (!androidExt.hasProperty('compileSdk') || androidExt.compileSdk == null) {
+                    androidExt.compileSdk = rootProject.ext.compileSdkVersion
+                }
+            } catch (Throwable ignored) {
+                try { androidExt.compileSdk = rootProject.ext.compileSdkVersion } catch (Throwable ignored2) {}
+            }
+            try {
+                if (!androidExt.hasProperty('minSdk') || androidExt.minSdk == null) {
+                    androidExt.minSdk = rootProject.ext.minSdkVersion
+                }
+            } catch (Throwable ignored) {
+                try { androidExt.defaultConfig.minSdk = rootProject.ext.minSdkVersion } catch (Throwable ignored2) {}
+            }
+            try {
+                if (!androidExt.hasProperty('targetSdk') || androidExt.targetSdk == null) {
+                    androidExt.targetSdk = rootProject.ext.targetSdkVersion
+                }
+            } catch (Throwable ignored) {
+                try { androidExt.defaultConfig.targetSdk = rootProject.ext.targetSdkVersion } catch (Throwable ignored2) {}
+            }
+        }
+    }
+}
