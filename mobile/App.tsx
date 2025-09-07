@@ -154,10 +154,23 @@ export default function App() {
   const CALLBACK_URL = 'sifar://trezor-callback';
 
   const ensureLocalServer = useCallback(async (): Promise<string> => {
-    if (serverRef.current.ready && serverRef.current.baseUrl) return serverRef.current.baseUrl as string;
+    // Always regenerate server for fresh HTML - remove this line once debugging is done
+    // if (serverRef.current.ready && serverRef.current.baseUrl) return serverRef.current.baseUrl as string;
     try {
+      // Stop existing server if any
+      if (serverRef.current.server) {
+        try {
+          await serverRef.current.server.stop();
+          logInfo('Stopped existing server');
+        } catch (e) {
+          logWarn('Failed to stop existing server: ' + String(e));
+        }
+      }
+      
       const dir = `${DocumentDirectoryPath}/trezor_handler`;
       await mkdir(dir).catch(() => {});
+      // Force regenerate HTML each time with fresh timestamp
+      logInfo('Regenerating HTML file with timestamp: ' + Date.now());
       await writeFile(`${dir}/${TREZOR_PAGE_NAME}`, trezorHandlerHtml, 'utf8');
       const server = new StaticServer({ fileDir: dir, hostname: '127.0.0.1', port: 0 });
       const origin = await server.start('Start server');
@@ -676,9 +689,16 @@ const trezorHandlerHtml = `<!DOCTYPE html>
   <style> body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,\"Noto Sans\",sans-serif;padding:12px} pre{white-space:pre-wrap;word-break:break-word;background:#f3f4f6;padding:8px;border-radius:6px} .warn{color:#b45309} .ok{color:#065f46} .err{color:#991b1b}</style>
 </head>
 <body>
-  <h2>sifar – Trezor Handler</h2>
+  <h2>sifar – Trezor Handler (v` + Date.now() + `)</h2>
   <div id=\"st\">Initializing…</div>
-  <button onclick=\"testCallback()\" style=\"margin: 10px; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px;\">Test Callback</button>
+  <div style=\"background: #f0f0f0; padding: 10px; margin: 10px 0; border: 1px solid #ccc;\">
+    <strong>Debug Info:</strong><br>
+    Generated: ` + new Date().toISOString() + `<br>
+    URL: <span id=\"currentUrl\">Loading...</span><br>
+    Callback: <span id=\"callbackUrl\">Loading...</span>
+  </div>
+  <button id=\"testBtn\" style=\"margin: 10px; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;\">Test Callback</button>
+  <button onclick=\"alert('Alert test works!')\" style=\"margin: 10px; padding: 10px; background: #28a745; color: white; border: none; border-radius: 4px;\">Test Alert</button>
   <pre id=\"lg\"></pre>
   <script>
     var st = document.getElementById('st');
@@ -691,8 +711,12 @@ const trezorHandlerHtml = `<!DOCTYPE html>
     
     function testCallback() {
       bridgeLog('info', 'Test callback button clicked');
+      set('Test Callback Clicked!', 'ok');
+      
       var q = new URLSearchParams(location.search);
       var callback = q.get('callback')||'';
+      bridgeLog('info', 'Callback URL: ' + (callback || 'NONE'));
+      
       if (callback) {
         var testData = {message: 'Test callback successful', timestamp: Date.now()};
         bridgeLog('info', 'Sending test callback with data: ' + JSON.stringify(testData));
@@ -701,17 +725,47 @@ const trezorHandlerHtml = `<!DOCTYPE html>
           u.searchParams.set('status', 'success');
           u.searchParams.set('data', encodeURIComponent(JSON.stringify(testData)));
           var finalUrl = u.toString();
-          bridgeLog('info', 'Test callback URL: ' + finalUrl);
+          bridgeLog('info', 'Test callback URL: ' + finalUrl.substring(0, 50) + '...');
+          set('Redirecting...', 'warn');
           location.replace(finalUrl);
         } catch (e) {
           bridgeLog('error', 'Test callback failed: ' + e.message);
+          set('Callback failed: ' + e.message, 'err');
         }
       } else {
         bridgeLog('error', 'No callback URL found for test');
+        set('No callback URL found', 'err');
       }
     }
+    
+    // Set up test button event listener
+    document.addEventListener('DOMContentLoaded', function() {
+      bridgeLog('info', 'DOM loaded, setting up test button');
+      var testBtn = document.getElementById('testBtn');
+      if (testBtn) {
+        testBtn.addEventListener('click', testCallback);
+        bridgeLog('info', 'Test button click listener added');
+      } else {
+        bridgeLog('error', 'Test button not found');
+      }
+    });
+    
+    // Also try immediate setup in case DOM is already loaded
+    setTimeout(function() {
+      var testBtn = document.getElementById('testBtn');
+      if (testBtn && !testBtn.onclick) {
+        testBtn.addEventListener('click', testCallback);
+        bridgeLog('info', 'Test button click listener added (delayed)');
+      }
+    }, 100);
+    
+    // Populate debug info immediately
+    document.getElementById('currentUrl').textContent = location.href;
+    document.getElementById('callbackUrl').textContent = new URLSearchParams(location.search).get('callback') || 'NONE';
+    
     (async function(){
       try{
+        bridgeLog('info', 'Script started');
         bridgeLog('info', 'userAgent: '+navigator.userAgent);
         
         // Check WebUSB support
