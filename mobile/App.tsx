@@ -677,6 +677,7 @@ const trezorHandlerHtml = `<!DOCTYPE html>
 <body>
   <h2>sifar – Trezor Handler</h2>
   <div id=\"st\">Initializing…</div>
+  <button onclick=\"testCallback()\" style=\"margin: 10px; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px;\">Test Callback</button>
   <pre id=\"lg\"></pre>
   <script>
     var st = document.getElementById('st');
@@ -686,9 +687,52 @@ const trezorHandlerHtml = `<!DOCTYPE html>
     function bridgeLog(level, msg){ log('['+level.toUpperCase()+'] '+msg); }
     window.onerror = function(message, source, lineno, colno, error){ bridgeLog('error', 'onerror: '+message+' @'+source+':'+lineno+':'+colno); };
     window.addEventListener('unhandledrejection', function(e){ bridgeLog('error', 'unhandledrejection: '+(e && e.reason && (e.reason.message||e.reason) || '')); });
+    
+    function testCallback() {
+      bridgeLog('info', 'Test callback button clicked');
+      var q = new URLSearchParams(location.search);
+      var callback = q.get('callback')||'';
+      if (callback) {
+        var testData = {message: 'Test callback successful', timestamp: Date.now()};
+        bridgeLog('info', 'Sending test callback with data: ' + JSON.stringify(testData));
+        try {
+          var u = new URL(callback);
+          u.searchParams.set('status', 'success');
+          u.searchParams.set('data', encodeURIComponent(JSON.stringify(testData)));
+          var finalUrl = u.toString();
+          bridgeLog('info', 'Test callback URL: ' + finalUrl);
+          location.replace(finalUrl);
+        } catch (e) {
+          bridgeLog('error', 'Test callback failed: ' + e.message);
+        }
+      } else {
+        bridgeLog('error', 'No callback URL found for test');
+      }
+    }
     (async function(){
       try{
         bridgeLog('info', 'userAgent: '+navigator.userAgent);
+        
+        // Check WebUSB support
+        if (!navigator.usb) {
+          bridgeLog('error', 'WebUSB not supported in this browser context');
+          set('WebUSB not supported', 'err');
+          return;
+        } else {
+          bridgeLog('info', 'WebUSB API available');
+        }
+        
+        // List USB devices (requires user gesture, so this might fail)
+        try {
+          const devices = await navigator.usb.getDevices();
+          bridgeLog('info', 'USB devices found: ' + devices.length);
+          devices.forEach((device, i) => {
+            bridgeLog('info', 'Device ' + i + ': VID=' + device.vendorId.toString(16) + ' PID=' + device.productId.toString(16));
+          });
+        } catch (e) {
+          bridgeLog('warn', 'Could not list USB devices: ' + e.message);
+        }
+        
         await TrezorConnect.init({
           popup: false,
           lazyLoad: false,
@@ -707,7 +751,21 @@ const trezorHandlerHtml = `<!DOCTYPE html>
         var payload = {}; try{ payload = JSON.parse(payloadStr);}catch(e){ bridgeLog('warn','payload parse fail: '+e); }
         var callback = q.get('callback')||'';
         bridgeLog('info', 'action='+action);
-        function finish(status, data){ try{ var u=new URL(callback); u.searchParams.set('status',status); var ds= typeof data==='string'?data:JSON.stringify(data||{}); u.searchParams.set('data', encodeURIComponent(ds)); location.replace(u.toString()); }catch(e){ bridgeLog('error','callback build failed: '+e);} }
+        function finish(status, data){ 
+          try{ 
+            bridgeLog('info', 'Finishing with status=' + status + ', data length=' + (typeof data==='string' ? data.length : JSON.stringify(data||{}).length));
+            var u=new URL(callback); 
+            u.searchParams.set('status',status); 
+            var ds= typeof data==='string'?data:JSON.stringify(data||{}); 
+            u.searchParams.set('data', encodeURIComponent(ds)); 
+            var finalUrl = u.toString();
+            bridgeLog('info', 'Redirecting to: ' + finalUrl.substring(0, 100) + '...');
+            location.replace(finalUrl); 
+          }catch(e){ 
+            bridgeLog('error','callback build failed: '+e);
+            set('Callback failed: ' + e.message, 'err');
+          } 
+        }
         if (!action) return;
         try{
           let result;
@@ -718,16 +776,31 @@ const trezorHandlerHtml = `<!DOCTYPE html>
             var start = payload.start || 0;
             var count = Math.min(payload.count || 5, 20); // max 20 addresses
             var showOnTrezor = !!payload.showOnTrezor;
+            bridgeLog('info', 'Starting address list fetch: pathPrefix=' + pathPrefix + ', start=' + start + ', count=' + count);
+            
             var addresses = [];
             for (var i = 0; i < count; i++) {
               var path = pathPrefix + (start + i);
-              var res = await TrezorConnect.ethereumGetAddress({path: path, showOnTrezor: showOnTrezor});
-              if (res && res.success && res.payload && res.payload.address) {
-                addresses.push(res.payload.address);
-              } else {
-                throw new Error('Failed to get address at index ' + (start + i) + ': ' + (res && res.payload && res.payload.error || 'Unknown'));
+              bridgeLog('info', 'Requesting address for path: ' + path);
+              
+              try {
+                var res = await TrezorConnect.ethereumGetAddress({path: path, showOnTrezor: showOnTrezor});
+                bridgeLog('info', 'Address response ' + i + ': success=' + (res && res.success));
+                
+                if (res && res.success && res.payload && res.payload.address) {
+                  addresses.push(res.payload.address);
+                  bridgeLog('info', 'Got address ' + i + ': ' + res.payload.address.substring(0, 10) + '...');
+                } else {
+                  var errorMsg = (res && res.payload && (res.payload.error || res.payload.code)) || 'Unknown error';
+                  bridgeLog('error', 'Failed to get address at index ' + (start + i) + ': ' + errorMsg);
+                  throw new Error('Failed to get address at index ' + (start + i) + ': ' + errorMsg);
+                }
+              } catch (e) {
+                bridgeLog('error', 'Exception getting address ' + i + ': ' + e.message);
+                throw e;
               }
             }
+            bridgeLog('info', 'Address list complete: ' + addresses.length + ' addresses');
             result = {success: true, payload: {addresses: addresses}};
           }
           else if (action==='eth_signTransaction') result = await TrezorConnect.ethereumSignTransaction(payload);
