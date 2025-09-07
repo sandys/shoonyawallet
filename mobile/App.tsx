@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, ScrollView, Pressable } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
@@ -19,63 +19,82 @@ export default function App() {
   const [ethAddress, setEthAddress] = useState<string | null>(null);
   const [showPermissionHelp, setShowPermissionHelp] = useState(false);
   const [webviewReady, setWebviewReady] = useState(false);
+  const readyWaiters = useRef<Array<() => void>>([]);
 
   const webviewRef = useRef<WebView>(null);
   const reqId = useRef(1);
   const pending = useRef(new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>());
 
+  const MAX_LOGS = 2000;
   const log = useCallback((msg: string) => {
-    const ts = new Date().toISOString().slice(11, 23);
-    setLogs((l) => [...l, `${ts} ${msg}`].slice(-500));
+    const ts = new Date().toISOString();
+    setLogs((l) => [...l, `${ts} ${msg}`].slice(-MAX_LOGS));
   }, []);
+  const logInfo = useCallback((msg: string) => log(`[INFO] ${msg}`), [log]);
+  const logWarn = useCallback((msg: string) => log(`[WARN] ${msg}`), [log]);
+  const logError = useCallback((msg: string) => log(`[ERROR] ${msg}`), [log]);
 
   const sendToBridge = useCallback(async (action: string, payload?: any) => {
+    if (!webviewReady) {
+      logInfo(`Bridge not ready; waiting before sending ${action}`);
+      await new Promise<void>((resolve) => readyWaiters.current.push(resolve));
+    }
     return new Promise<any>((resolve, reject) => {
       const id = reqId.current++;
       pending.current.set(id, { resolve, reject });
       const message: BridgeRequest = { id, action, payload };
       try {
+        const summary = action === 'eth_signTransaction'
+          ? `{to:${payload?.transaction?.to}, value:${payload?.transaction?.value}, chainId:${payload?.transaction?.chainId}}`
+          : JSON.stringify(payload ?? {});
+        logInfo(`RN->WV id=${id} action=${action} payload=${summary}`);
         webviewRef.current?.postMessage(JSON.stringify(message));
-        log(`RN->WV ${action}`);
-      } catch (e) {
+      } catch (e: any) {
         pending.current.delete(id);
+        const msg = e?.message ?? String(e);
+        logError(`Failed to postMessage id=${id}: ${msg}`);
         reject(e);
       }
     });
-  }, [log]);
+  }, [logInfo, logError, webviewReady]);
 
   const onWebViewMessage = useCallback((event: WebViewMessageEvent) => {
     try {
-      const data: BridgeResponse = JSON.parse(event.nativeEvent.data);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data: any = JSON.parse(event.nativeEvent.data);
+      if (data && data.type === 'log') {
+        const level = (data.level || 'log').toUpperCase();
+        const message = data.message || '';
+        // Tag logs from within WebView
+        log(`[WV ${level}] ${message}`);
+        return;
+      }
       const anyData: any = data as any;
       if (typeof anyData.id !== 'number') {
-        log(`WV->RN unknown message: ${event.nativeEvent.data.slice(0, 120)}`);
+        logWarn(`WV->RN unknown message: ${event.nativeEvent.data.slice(0, 200)}`);
         return;
       }
       const cb = pending.current.get(anyData.id);
       if (!cb) return;
       pending.current.delete(anyData.id);
       if (anyData.status === 'success') {
-        log(`WV->RN OK for id ${anyData.id}`);
+        logInfo(`WV->RN OK id=${anyData.id}`);
         cb.resolve(anyData.result);
       } else {
-        log(`WV->RN ERR for id ${anyData.id}: ${anyData.error}`);
+        logError(`WV->RN ERR id=${anyData.id}: ${anyData.error}`);
         cb.reject(new Error(anyData.error || 'Bridge error'));
       }
     } catch (e) {
-      log(`WV->RN parse error: ${String(e)}`);
+      logError(`WV->RN parse error: ${String(e)}`);
     }
-  }, [log]);
+  }, [log, logInfo, logWarn, logError]);
 
   const start = async () => {
+    logInfo('start() called');
     setLogs([]);
     setError(null);
     setPhase('connecting');
     try {
-      if (!webviewReady) {
-        await new Promise((r) => setTimeout(r, 500));
-      }
+      if (!webviewReady) logInfo('Waiting for WebView to be ready…');
       const res = await sendToBridge('eth_getAddress', {
         path: "m/44'/60'/0'/0/0",
         showOnTrezor: true,
@@ -83,10 +102,12 @@ export default function App() {
       const address: string | undefined = res?.payload?.address || res?.address || res?.payload?.addressHex;
       if (!address) throw new Error('No address returned');
       setEthAddress(address);
+      logInfo(`Received ETH address: ${address}`);
       setPhase('ready');
     } catch (e: any) {
       const msg = e?.message ?? String(e);
       setError(msg);
+      logError(`start() failed: ${msg}`);
       setPhase('error');
       setShowPermissionHelp(true);
     }
@@ -95,7 +116,7 @@ export default function App() {
   const signSampleTx = async () => {
     try {
       setError(null);
-      log('Signing sample EIP-1559 tx on chainId 1 (not broadcast)');
+      logInfo('Signing sample EIP-1559 tx on chainId 1 (not broadcast)');
       const result = await sendToBridge('eth_signTransaction', {
         path: "m/44'/60'/0'/0/0",
         transaction: {
@@ -110,11 +131,17 @@ export default function App() {
         },
       });
       const sig = result?.payload || result;
-      log(`Signature: ${JSON.stringify(sig)}`);
+      logInfo(`Signature: ${JSON.stringify(sig)}`);
     } catch (e: any) {
-      setError(e?.message ?? String(e));
+      const msg = e?.message ?? String(e);
+      setError(msg);
+      logError(`signSampleTx failed: ${msg}`);
     }
   };
+
+  useEffect(() => {
+    log(`App mounted (${Platform.OS})`);
+  }, [log]);
 
   return (
     <SafeAreaProvider>
@@ -164,7 +191,17 @@ export default function App() {
           <View style={styles.btnrow}>
             <Button title="Copy Logs" onPress={async () => {
               try {
-                const merged = [...logs];
+                const header = [
+                  `App: sifar`,
+                  `Platform: ${Platform.OS} ${String(Platform.Version)}`,
+                  `Phase: ${phase}`,
+                  `WebView ready: ${webviewReady}`,
+                  `Pending requests: ${pending.current.size}`,
+                  `Next reqId: ${reqId.current}`,
+                  `ETH addr: ${ethAddress ?? '-'}`,
+                  '=== Logs start ===',
+                ];
+                const merged = [...header, ...logs];
                 Clipboard.setString(merged.join('\n'));
                 const ts = new Date().toISOString().slice(11, 23);
                 setLogs((l) => [...l, `${ts} Copied ${merged.length} lines to clipboard`]);
@@ -174,6 +211,9 @@ export default function App() {
               }
             }} />
             <Button title="Clear Logs" onPress={() => setLogs([])} />
+            <Button title="Dump State" onPress={() => {
+              logInfo(`Dump: phase=${phase} webviewReady=${webviewReady} pending=${pending.current.size} reqId=${reqId.current} addr=${ethAddress}`);
+            }} />
           </View>
         </View>
 
@@ -196,7 +236,22 @@ export default function App() {
         {/* Hidden WebView bridge for Trezor Connect (WebUSB). Rendered always to ease testing. */}
         <WebView
           ref={webviewRef}
-          onLoadEnd={() => { setWebviewReady(true); log('WebView ready'); }}
+          onLoadStart={() => { logInfo('WebView load start'); }}
+          onLoadEnd={() => {
+            setWebviewReady(true);
+            const q = readyWaiters.current.splice(0, readyWaiters.current.length);
+            q.forEach((fn) => fn());
+            logInfo('WebView ready');
+          }}
+          onError={(syntheticEvent) => {
+            const { nativeEvent } = syntheticEvent as any;
+            logError(`WebView error: ${nativeEvent?.description || nativeEvent}`);
+          }}
+          onHttpError={(syntheticEvent) => {
+            const { nativeEvent } = syntheticEvent as any;
+            logError(`WebView HTTP ${nativeEvent?.statusCode}: ${nativeEvent?.description || ''}`);
+          }}
+          onNavigationStateChange={(navState) => { try { logInfo(`WebView nav: ${navState.url || '(inline)'} loading=${navState.loading}`);} catch(_){} }}
           onMessage={onWebViewMessage}
           originWhitelist={['*']}
           javaScriptEnabled
@@ -239,7 +294,26 @@ const trezorBridgeHtmlContent = `<!doctype html>
     <script src=\"https://connect.trezor.io/9/trezor-connect.js\"></script>
     <script>
       (function() {
-        function log(msg) { try { console.log('[WV]', msg); } catch (e) {} }
+        var RN = window.ReactNativeWebView;
+        function bridgeLog(level, msg) {
+          try { RN && RN.postMessage(JSON.stringify({ type: 'log', level: level, message: String(msg) })); } catch (e) {}
+        }
+        // Mirror console to RN
+        (function(){
+          var c = window.console || {};
+          ['log','warn','error','info','debug'].forEach(function(k){
+            var orig = c[k] ? c[k].bind(c) : function(){};
+            console[k] = function(){
+              try {
+                var msg = Array.prototype.map.call(arguments, function(a){ try { return typeof a==='string'?a:JSON.stringify(a); } catch(e){ return String(a);} }).join(' ');
+                bridgeLog(k, msg);
+              } catch (e) {}
+              try { orig.apply(null, arguments); } catch(e) {}
+            };
+          });
+        })();
+        window.onerror = function(message, source, lineno, colno, error){ bridgeLog('error', 'onerror: '+message+' @'+source+':'+lineno+':'+colno+' '+(error&&error.stack?error.stack:'')); };
+        window.addEventListener('unhandledrejection', function(ev){ try { var r=ev&&ev.reason; bridgeLog('error', 'unhandledrejection: '+(r&&r.stack?r.stack:(r&&r.message?r.message:String(r)))); } catch(e){} });
 
         async function init() {
           try {
@@ -249,11 +323,13 @@ const trezorBridgeHtmlContent = `<!doctype html>
               lazyLoad: true,
               transportReconnect: true,
             });
-            log('TrezorConnect initialized');
+            bridgeLog('info', 'TrezorConnect initialized');
           } catch (e) {
-            log('Init error: ' + (e && e.message ? e.message : e));
+            bridgeLog('error', 'Init error: ' + (e && e.message ? e.message : e));
           }
         }
+        try { bridgeLog('info', 'userAgent: '+navigator.userAgent); } catch(e) {}
+        try { bridgeLog('info', 'document.readyState: '+document.readyState); } catch(e) {}
 
         function postMessageToRN(obj) {
           try { window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch (e) {}
@@ -266,6 +342,7 @@ const trezorBridgeHtmlContent = `<!doctype html>
           (async function(){
             try {
               var result;
+              bridgeLog('info', 'handleMessage id='+id+' action='+action);
               switch(action) {
                 case 'eth_getAddress':
                   result = await TrezorConnect.ethereumGetAddress({
@@ -288,8 +365,10 @@ const trezorBridgeHtmlContent = `<!doctype html>
                 default:
                   throw new Error('Unsupported action: ' + action);
               }
+              bridgeLog('info', 'result for id='+id+': '+(result && typeof result === 'object' ? JSON.stringify({ success: result.success, payload: (result.payload && result.payload.address ? { address: result.payload.address } : 'ok') }) : String(result)) );
               postMessageToRN({ id: id, status: 'success', result: result });
             } catch (e) {
+              bridgeLog('error', 'error for id='+id+': '+(e&&e.message?e.message:String(e)));
               postMessageToRN({ id: id, status: 'error', error: (e && e.message) ? e.message : String(e) });
             }
           })();
