@@ -2,9 +2,9 @@ name: Android CI
 
 on:
   push:
-    branches: [ webusb ]
+    branches: [ custom-tabs ]
   pull_request:
-    branches: [ webusb ]
+    branches: [ custom-tabs ]
 
 jobs:
   test:
