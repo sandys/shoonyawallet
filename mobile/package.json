@@ -14,20 +14,21 @@
     "gen:trezor-descriptor": "pbjs -t json -o src/services/hardware/trezor/protos/descriptor.json src/services/hardware/trezor/protos/options.proto src/services/hardware/trezor/protos/messages-common.proto src/services/hardware/trezor/protos/messages-management.proto src/services/hardware/trezor/protos/messages.proto src/services/hardware/trezor/protos/messages-solana.proto"
   },
   "dependencies": {
-    "react": "19.1.0",
-    "react-native": "0.81.1",
-    "react-native-webview": "^13.10.2",
-    "react-native-http-bridge": "^0.6.1",
-    "react-native-inappbrowser-reborn": "^3.7.0",
-    "@react-native/new-app-screen": "0.81.1",
-    "react-native-safe-area-context": "^5.5.2",
+    "@dr.pogodin/react-native-static-server": "^0.24.2",
     "@react-native-clipboard/clipboard": "^1.11.1",
+    "@react-native/new-app-screen": "0.81.1",
     "@solana/web3.js": "^1.95.0",
+    "@trezor/protobuf": "^1.4.2",
+    "@trezor/protocol": "^1.2.8",
+    "@trezor/transport": "^1.5.2",
     "bs58": "^5.0.0",
     "protobufjs": "^7.2.6",
-    "@trezor/transport": "^1.5.2",
-    "@trezor/protocol": "^1.2.8",
-    "@trezor/protobuf": "^1.4.2"
+    "react": "19.1.0",
+    "react-native": "0.81.1",
+    "@dr.pogodin/react-native-fs": "^2.35.1",
+    "react-native-inappbrowser-reborn": "^3.7.0",
+    "react-native-safe-area-context": "^5.5.2",
+    "react-native-webview": "^13.10.2"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
@@ -40,18 +41,18 @@
     "@react-native/eslint-config": "0.81.1",
     "@react-native/metro-config": "0.81.1",
     "@react-native/typescript-config": "0.81.1",
+    "@testing-library/jest-native": "^5.0.0",
+    "@testing-library/react-native": "^12.5.2",
     "@types/jest": "^29.5.13",
     "@types/react": "^19.1.0",
     "@types/react-test-renderer": "^19.1.0",
     "eslint": "^8.19.0",
     "jest": "^29.6.3",
-    "prettier": "2.8.8",
-    "react-test-renderer": "19.1.0",
-    "typescript": "^5.8.3",
-    "@testing-library/react-native": "^12.5.2",
-    "@testing-library/jest-native": "^5.0.0",
     "jest-environment-jsdom": "^29.7.0",
-    "protobufjs-cli": "^1.1.1"
+    "prettier": "2.8.8",
+    "protobufjs-cli": "^1.1.1",
+    "react-test-renderer": "19.1.0",
+    "typescript": "^5.8.3"
   },
   "engines": {
     "node": ">=20"

@@ -155,12 +155,21 @@ jest.mock('react-native-webview', () => {
 });
 
 // Mock react-native-web-server and inappbrowser for tests
-jest.mock('react-native-http-bridge', () => ({
+jest.mock('@dr.pogodin/react-native-static-server', () => ({
   __esModule: true,
-  start: jest.fn(),
-  stop: jest.fn(),
-  respond: jest.fn(),
+  default: class StaticServer {
+    constructor(opts) { this.opts = opts; this._origin = 'http://127.0.0.1:12345'; }
+    start = jest.fn(async () => this._origin);
+    stop = jest.fn(async () => undefined);
+  },
 }));
+
+jest.mock('@dr.pogodin/react-native-fs', () => ({
+  __esModule: true,
+  DocumentDirectoryPath: '/mock/Documents',
+  mkdir: jest.fn(async () => {}),
+  writeFile: jest.fn(async () => {}),
+}), { virtual: true });
 
 jest.mock('react-native-inappbrowser-reborn', () => ({
   __esModule: true,
