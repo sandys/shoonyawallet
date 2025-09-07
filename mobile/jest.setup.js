@@ -171,17 +171,8 @@ jest.mock('@dr.pogodin/react-native-fs', () => ({
   writeFile: jest.fn(async () => {}),
 }), { virtual: true });
 
-jest.mock('react-native-inappbrowser-reborn', () => ({
+jest.mock('@swan-io/react-native-browser', () => ({
   __esModule: true,
-  default: {
-    isAvailable: jest.fn(async () => true),
-    open: jest.fn(async () => ({ type: 'opened' })),
-    close: jest.fn(() => {}),
-  },
-}));
-
-// Mock partial custom tab module
-jest.mock('./src/native/ChromeTabs', () => ({
-  __esModule: true,
-  openPartialCustomTab: jest.fn(async () => true),
+  openBrowser: jest.fn(async () => {}),
+  closeBrowser: jest.fn(() => {}),
 }));

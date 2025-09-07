@@ -4,11 +4,10 @@ import { View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, Scr
 import Clipboard from '@react-native-clipboard/clipboard';
 import type { WebViewMessageEvent } from 'react-native-webview';
 import { WebView } from 'react-native-webview';
-import InAppBrowser from 'react-native-inappbrowser-reborn';
+import { openBrowser, closeBrowser } from '@swan-io/react-native-browser';
 import StaticServer from '@dr.pogodin/react-native-static-server';
 import { DocumentDirectoryPath, mkdir, writeFile } from '@dr.pogodin/react-native-fs';
 import { Linking } from 'react-native';
-import { openPartialCustomTab } from './src/native/ChromeTabs';
 
 type Phase = 'idle' | 'connecting' | 'ready' | 'error';
 
@@ -201,7 +200,7 @@ export default function App() {
         logError(`CCT error for ${pendingAction.action}: ${err}`);
         pendingAction.reject(new Error(err || 'Canceled'));
       }
-      try { InAppBrowser.close(); } catch (_) {}
+      try { closeBrowser(); } catch (_) {}
     } catch (e: any) {
       logError(`onDeepLink error: ${e?.message ?? String(e)}`);
     }
@@ -229,16 +228,18 @@ export default function App() {
     return new Promise<any>(async (resolve, reject) => {
       cctPending.current = { action, resolve, reject };
       try {
-        // Require partial Custom Tab for proper UX
-        const launched = await openPartialCustomTab(url, 0.5);
-        if (!launched) {
-          logError('Partial CCT not available - this is required for proper UX');
-          throw new Error('Partial Custom Tabs not supported on this device. Please update Chrome or your Android system.');
-        }
-        logInfo('Using partial CCT (embedded)');
+        // Use @swan-io/react-native-browser for reliable Custom Tabs
+        logInfo('Opening browser with swan-io browser');
+        await openBrowser(url, {
+          animationType: 'slide',
+          dismissButtonStyle: 'close',
+          barTintColor: '#111827',
+          controlTintColor: '#ffffff'
+        });
+        logInfo('Browser opened successfully');
       } catch (e: any) {
         const msg = e?.message ?? String(e);
-        logError(`CCT open failed: ${msg}`);
+        logError(`Browser open failed: ${msg}`);
         cctPending.current = null;
         reject(e);
       }
@@ -272,22 +273,22 @@ export default function App() {
           }
         } catch (e) { logError(`Address parse failed: ${String(e)}`); } finally { resolve(); } }, reject } as any;
         try {
-          // Try partial Custom Tab first (embedded)
-          const launched = await openPartialCustomTab(url, 0.4);
-          if (!launched) {
-            logError('Partial CCT not available - this is required for proper UX');
-            logError('Full-screen browser would block React Native UI');
-            throw new Error('Partial Custom Tabs not supported on this device. Please update Chrome or your Android system.');
-          } else {
-            logInfo('Using partial CCT (embedded)');
-            // Add timeout in case CCT opens full-screen instead of partial
-            setTimeout(() => {
-              if (cctPending.current) {
-                logWarn('CCT taking too long - it may have opened full-screen. Try closing the browser manually.');
-                logWarn('If browser is stuck, try pressing the back button or force-closing Chrome.');
-              }
-            }, 3000);
-          }
+          // Use @swan-io/react-native-browser for reliable Custom Tabs
+          logInfo('Opening browser with swan-io browser');
+          await openBrowser(url, {
+            animationType: 'slide',
+            dismissButtonStyle: 'close',
+            barTintColor: '#111827',
+            controlTintColor: '#ffffff'
+          });
+          logInfo('Browser opened successfully');
+          
+          // Add timeout warning
+          setTimeout(() => {
+            if (cctPending.current) {
+              logWarn('Browser taking longer than expected - check if Trezor is connected and unlocked');
+            }
+          }, 5000);
         } catch (e) {
           cctPending.current = null; reject(e);
         }
