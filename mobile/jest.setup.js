@@ -11,6 +11,21 @@ jest.mock(
   { virtual: true },
 );
 
+// Simplify SafeArea for tests to make content queryable
+jest.mock('react-native-safe-area-context', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  return {
+    __esModule: true,
+    SafeAreaProvider: ({ children }) => React.createElement(View, null, children),
+    SafeAreaView: ({ children, ...props }) => React.createElement(View, props, children),
+    useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+  };
+});
+
+// Flag to allow components to render test-only controls
+global.__TEST__ = true;
+
 // Mock Clipboard TurboModule globally for tests that import it
 jest.mock(
   '@react-native-clipboard/clipboard',
@@ -111,3 +126,30 @@ jest.mock(
   }),
   { virtual: true },
 );
+
+// Mock react-native-webview to avoid ESM parsing and provide a minimal stub in tests
+jest.mock('react-native-webview', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  let lastApi = { postMessage: jest.fn() };
+  let lastProps = {};
+  const MockWebView = React.forwardRef((props, ref) => {
+    const api = { postMessage: jest.fn() };
+    lastApi = api;
+    lastProps = props || {};
+    if (ref) {
+      if (typeof ref === 'function') ref(api);
+      else ref.current = api;
+    }
+    return React.createElement(View, props, props.children);
+  });
+  return {
+    __esModule: true,
+    WebView: MockWebView,
+    __mock: {
+      getPostMessage: () => lastApi.postMessage,
+      getLastApi: () => lastApi,
+      getLastProps: () => lastProps,
+    },
+  };
+});

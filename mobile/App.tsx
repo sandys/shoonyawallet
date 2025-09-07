@@ -1,190 +1,157 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, ScrollView, TextInput } from 'react-native';
+import { View, Text, Button, ActivityIndicator, StyleSheet, Platform, Modal, ScrollView, Pressable } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
-import { TrezorBridge } from './src/services/hardware/TrezorBridge';
-import { TrezorUSB } from './src/native/TrezorUSB';
-import { SolanaRPCService } from './src/services/rpc/SolanaRPCService';
-import { classifyTrezorError } from './src/services/hardware/errors';
+import type { WebViewMessageEvent } from 'react-native-webview';
+import { WebView } from 'react-native-webview';
 
-type Phase = 'idle' | 'connecting' | 'fetching' | 'done' | 'error';
+type Phase = 'idle' | 'connecting' | 'ready' | 'error';
+
+type BridgeRequest = { id: number; action: string; payload?: any };
+type BridgeResponse =
+  | { id: number; status: 'success'; result: any }
+  | { id: number; status: 'error'; error: string };
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [pubkey, setPubkey] = useState<string | null>(null);
-  const [balance, setBalance] = useState<number | null>(null);
-  const [tokens, setTokens] = useState<Array<{ mint: string; uiAmount: number; amount: string; decimals: number }>>([]);
+  const [ethAddress, setEthAddress] = useState<string | null>(null);
   const [showPermissionHelp, setShowPermissionHelp] = useState(false);
-  const [transportInfo, setTransportInfo] = useState<null | {
-    interfaceClass?: number;
-    interfaceSubclass?: number;
-    interfaceProtocol?: number;
-    inEndpointAddress?: number;
-    outEndpointAddress?: number;
-    inMaxPacketSize?: number;
-    outMaxPacketSize?: number;
-  }>(null);
-  const [transportDiag, setTransportDiag] = useState<string>('');
-  const [passphraseVisible, setPassphraseVisible] = useState(false);
-  const [passphraseValue, setPassphraseValue] = useState('');
-  const [passphraseResolve, setPassphraseResolve] = useState<null | ((v: string | null) => void)>(null);
-  
-  const requestPassphrase = async (): Promise<string | null> => {
-    return new Promise<string | null>((resolve) => {
-      setPassphraseValue('');
-      setPassphraseResolve(() => resolve);
-      setPassphraseVisible(true);
-    });
-  };
+  const [webviewReady, setWebviewReady] = useState(false);
 
-  const trezor = useMemo(() => new TrezorBridge((msg) => {
+  const webviewRef = useRef<WebView>(null);
+  const reqId = useRef(1);
+  const pending = useRef(new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>());
+
+  const log = useCallback((msg: string) => {
     const ts = new Date().toISOString().slice(11, 23);
     setLogs((l) => [...l, `${ts} ${msg}`].slice(-500));
-  }, requestPassphrase), []);
-  
-  const rpc = useMemo(() => new SolanaRPCService(), []);
-  const shortMint = (m: string) => `${m.slice(0, 4)}…${m.slice(-4)}`;
-  const formatUiAmount = (n: number) => {
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}m`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(2)}k`;
-    return n.toFixed(n < 1 ? 6 : 2);
-  };
+  }, []);
 
-  const pullNativeLogs = async () => {
+  const sendToBridge = useCallback(async (action: string, payload?: any) => {
+    return new Promise<any>((resolve, reject) => {
+      const id = reqId.current++;
+      pending.current.set(id, { resolve, reject });
+      const message: BridgeRequest = { id, action, payload };
+      try {
+        webviewRef.current?.postMessage(JSON.stringify(message));
+        log(`RN->WV ${action}`);
+      } catch (e) {
+        pending.current.delete(id);
+        reject(e);
+      }
+    });
+  }, [log]);
+
+  const onWebViewMessage = useCallback((event: WebViewMessageEvent) => {
     try {
-      const native = await TrezorUSB.getDebugLog();
-      const count = Array.isArray(native) ? native.length : 0;
-      if (count > 0) {
-        setLogs((l) => [...l, ...native, `${new Date().toISOString().slice(11, 23)} Pulled ${count} native log lines`]);
+      const data: BridgeResponse = JSON.parse(event.nativeEvent.data);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const anyData: any = data as any;
+      if (typeof anyData.id !== 'number') {
+        log(`WV->RN unknown message: ${event.nativeEvent.data.slice(0, 120)}`);
+        return;
+      }
+      const cb = pending.current.get(anyData.id);
+      if (!cb) return;
+      pending.current.delete(anyData.id);
+      if (anyData.status === 'success') {
+        log(`WV->RN OK for id ${anyData.id}`);
+        cb.resolve(anyData.result);
       } else {
-        setLogs((l) => [...l, `${new Date().toISOString().slice(11, 23)} No native logs available`]);
+        log(`WV->RN ERR for id ${anyData.id}: ${anyData.error}`);
+        cb.reject(new Error(anyData.error || 'Bridge error'));
       }
     } catch (e) {
-      const ts = new Date().toISOString().slice(11, 23);
-      setLogs((l) => [...l, `${ts} Failed to pull native logs: ${String(e)}`]);
+      log(`WV->RN parse error: ${String(e)}`);
     }
-  };
+  }, [log]);
 
-  const start = async (opts?: { slow?: boolean }) => {
+  const start = async () => {
     setLogs([]);
     setError(null);
     setPhase('connecting');
     try {
-      const key = await trezor.connectAndGetPublicKey(
-        opts?.slow
-          ? { maxAttempts: 5, attemptDelayMs: 1200, backoff: 'exponential', maxDelayMs: 8000 }
-          : { maxAttempts: 3, attemptDelayMs: 600, backoff: 'linear' }
-      );
-      setPubkey(key);
-      setPhase('fetching');
-      setLogs((l) => [...l, `${new Date().toISOString().slice(11, 23)} RPC: begin for ${key.slice(0, 6)}…${key.slice(-6)}`]);
-      const lamports = await rpc.getBalance(key);
-      setLogs((l) => [...l, `${new Date().toISOString().slice(11, 23)} RPC: SOL balance fetched`]);
-      setBalance(lamports / 1_000_000_000);
-      const tkns = await rpc.getSplTokenBalances(key).catch((err) => {
-        const ts = new Date().toISOString().slice(11, 23);
-        setLogs((l) => [...l, `${ts} RPC: token fetch error: ${String(err?.message ?? err)}`]);
-        return [] as typeof tokens;
-      });
-      setTokens(tkns);
-      // Log a concise token summary
-      const summaryTs = new Date().toISOString().slice(11, 23);
-      if (tkns.length === 0) {
-        setLogs((l) => [...l, `${summaryTs} Tokens: none`]);
-      } else {
-        const top = tkns.slice(0, 10).map((t) => `${shortMint(t.mint)}=${formatUiAmount(t.uiAmount)}`).join(', ');
-        setLogs((l) => [...l, `${summaryTs} Tokens (${tkns.length}): ${top}${tkns.length > 10 ? ', …' : ''}`]);
+      if (!webviewReady) {
+        await new Promise((r) => setTimeout(r, 500));
       }
-      setLogs((l) => [...l, `${new Date().toISOString().slice(11, 23)} RPC: end`]);
-      setPhase('done');
+      const res = await sendToBridge('eth_getAddress', {
+        path: "m/44'/60'/0'/0/0",
+        showOnTrezor: true,
+      });
+      const address: string | undefined = res?.payload?.address || res?.address || res?.payload?.addressHex;
+      if (!address) throw new Error('No address returned');
+      setEthAddress(address);
+      setPhase('ready');
     } catch (e: any) {
       const msg = e?.message ?? String(e);
-      setLogs((l) => [...l, `Error: ${msg}`]);
       setError(msg);
-      const cls = classifyTrezorError(msg);
-      if (cls.code === 'PERMISSION_DENIED' || cls.code === 'DEVICE_NOT_FOUND') {
-        setShowPermissionHelp(true);
-      }
-      // Pull native logs to aid debugging
-      await pullNativeLogs();
       setPhase('error');
+      setShowPermissionHelp(true);
     }
-    // Always try to pull transport interface info for diagnostics
-    try {
-      const info = await TrezorUSB.getInterfaceInfo();
-      setTransportInfo(info as any);
-      const klass = (info as any)?.interfaceClass as number | undefined;
-      const isHid = klass === 0x03;
-      const mode = isHid ? 'hid' : 'vendor';
-      const hidFallback = isHid ? 'enabled' : 'disabled';
-      setTransportDiag(`protocol=v1, iface=${mode}; hidLeadingZeroFallback=${hidFallback}`);
-    } catch {}
   };
 
-  useEffect(() => {
-    // Auto-start on Android; iOS shows unsupported note
-    if (Platform.OS === 'android') {
-      start();
+  const signSampleTx = async () => {
+    try {
+      setError(null);
+      log('Signing sample EIP-1559 tx on chainId 1 (not broadcast)');
+      const result = await sendToBridge('eth_signTransaction', {
+        path: "m/44'/60'/0'/0/0",
+        transaction: {
+          chainId: 1,
+          to: '0x000000000000000000000000000000000000dead',
+          value: '0x16345785d8a0000',
+          nonce: '0x0',
+          maxFeePerGas: '0x59682f00',
+          maxPriorityFeePerGas: '0x3b9aca00',
+          gasLimit: '0x5208',
+          data: '0x',
+        },
+      });
+      const sig = result?.payload || result;
+      log(`Signature: ${JSON.stringify(sig)}`);
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
     }
-  }, []);
+  };
 
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.root}>
-        <Text style={styles.title}>shoonyawallet</Text>
+        <Text style={styles.title}>NullWallet (Android • WebUSB)</Text>
         {Platform.OS === 'ios' && (
-          <Text style={styles.warn}>iOS: USB Trezor is not supported. Build is for UI/tests only.</Text>
-        )}
-        {phase !== 'done' && (
-          <View style={styles.section}>
-            <Text style={styles.subtitle}>Connect Trezor and Read Balance</Text>
-            <ActivityIndicator size="large" />
-            <Text style={styles.status}>Status: {phase}</Text>
-            <Text style={styles.help}>
-              Ensure Trezor Safe 3 is connected via USB-OTG and unlocked. On Android, grant USB permission when prompted.
-            </Text>
-            <View style={styles.btnrow}>
-              <Button title="Start" onPress={() => start()} />
-              <Button title="Retry" onPress={() => start()} />
-              <Button title="Slow Retry" onPress={() => start({ slow: true })} />
-            </View>
-            {phase === 'error' && !!error && (
-              <Text style={styles.error}>Error: {error}</Text>
-            )}
-          </View>
-        )}
-        {phase === 'done' && (
-          <View style={styles.section}>
-            <Text style={styles.subtitle}>Public Key</Text>
-            <Text selectable style={styles.mono}>{pubkey}</Text>
-            <Text style={styles.subtitle}>SOL Balance</Text>
-            <Text style={styles.value}>{balance?.toFixed(6)} SOL</Text>
-            <Text style={styles.subtitle}>Tokens</Text>
-            {tokens.length === 0 ? (
-              <Text style={styles.help}>No SPL tokens found.</Text>
-            ) : (
-              <View style={{ gap: 4 }}>
-                {tokens.map((t) => (
-                  <View key={`${t.mint}`} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                    <Text style={styles.mono}>{shortMint(t.mint)}</Text>
-                    <Text style={styles.mono}>{formatUiAmount(t.uiAmount)}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-            <Button title="Refresh" onPress={start} />
-          </View>
+          <Text style={styles.warn}>iOS is not supported for WebUSB/Trezor.</Text>
         )}
         <View style={styles.section}>
-          <Text style={styles.subtitle}>Transport</Text>
-          <Text style={styles.help}>{transportDiag || 'protocol=v1'}</Text>
-          {transportInfo && (
-            <Text style={styles.mono}>
-              {`Iface: class=${transportInfo.interfaceClass ?? '-'} subclass=${transportInfo.interfaceSubclass ?? '-'} proto=${transportInfo.interfaceProtocol ?? '-'}
-EPs: in=0x${Number(transportInfo.inEndpointAddress ?? 0).toString(16)} mps=${transportInfo.inMaxPacketSize ?? '-'} out=0x${Number(transportInfo.outEndpointAddress ?? 0).toString(16)} mps=${transportInfo.outMaxPacketSize ?? '-'}`}
-            </Text>
+          <Text style={styles.subtitle}>Trezor via WebView + Trezor Connect</Text>
+          <ActivityIndicator size="small" />
+          <Text style={styles.status}>Status: {phase}</Text>
+          <Text style={styles.help}>
+            Connect your Trezor via USB-OTG. Grant USB access if prompted.
+          </Text>
+          <View style={styles.btnrow}>
+            <Button accessibilityLabel="get-eth-address" title="Get ETH Address" onPress={() => start()} />
+            <Button accessibilityLabel="sign-sample-tx" title="Sign Sample Tx" onPress={() => signSampleTx()} />
+            {(global as any).__TEST__ ? (
+              <>
+                <Pressable testID="btnGetAddress" onPress={() => start()} accessibilityRole="button">
+                  <Text style={styles.mono}>[TEST] Get ETH Address</Text>
+                </Pressable>
+                <Pressable testID="btnSignSample" onPress={() => signSampleTx()} accessibilityRole="button">
+                  <Text style={styles.mono}>[TEST] Sign Sample Tx</Text>
+                </Pressable>
+              </>
+            ) : null}
+          </View>
+          {!!error && (
+            <Text style={styles.error}>Error: {error}</Text>
+          )}
+          {!!ethAddress && (
+            <>
+              <Text style={styles.subtitle}>ETH Address</Text>
+              <Text selectable style={styles.mono}>{ethAddress}</Text>
+            </>
           )}
         </View>
         <View style={styles.logs}>
@@ -197,26 +164,10 @@ EPs: in=0x${Number(transportInfo.inEndpointAddress ?? 0).toString(16)} mps=${tra
           <View style={styles.btnrow}>
             <Button title="Copy Logs" onPress={async () => {
               try {
-                // Merge app logs with native logs (if any) at copy time
-                const native = await TrezorUSB.getDebugLog().catch(() => [] as string[]);
-                const diagHeader: string[] = [];
-                const diag = transportDiag || 'protocol=v1';
-                diagHeader.push(`Transport: ${diag}`);
-                if (transportInfo) {
-                  const c = transportInfo.interfaceClass ?? '-';
-                  const s = transportInfo.interfaceSubclass ?? '-';
-                  const p = transportInfo.interfaceProtocol ?? '-';
-                  const inAddr = Number(transportInfo.inEndpointAddress ?? 0).toString(16);
-                  const outAddr = Number(transportInfo.outEndpointAddress ?? 0).toString(16);
-                  const inMps = transportInfo.inMaxPacketSize ?? '-';
-                  const outMps = transportInfo.outMaxPacketSize ?? '-';
-                  diagHeader.push(`Iface: class=${c} subclass=${s} proto=${p}`);
-                  diagHeader.push(`EPs: in=0x${inAddr} mps=${inMps} out=0x${outAddr} mps=${outMps}`);
-                }
-                const merged = [...diagHeader, ...logs, ...(Array.isArray(native) ? native : [])];
+                const merged = [...logs];
                 Clipboard.setString(merged.join('\n'));
                 const ts = new Date().toISOString().slice(11, 23);
-                setLogs((l) => [...l, `${ts} Copied ${merged.length} lines (app+native) to clipboard`]);
+                setLogs((l) => [...l, `${ts} Copied ${merged.length} lines to clipboard`]);
               } catch (e) {
                 const ts = new Date().toISOString().slice(11, 23);
                 setLogs((l) => [...l, `${ts} Copy failed: ${String(e)}`]);
@@ -225,51 +176,35 @@ EPs: in=0x${Number(transportInfo.inEndpointAddress ?? 0).toString(16)} mps=${tra
             <Button title="Clear Logs" onPress={() => setLogs([])} />
           </View>
         </View>
-        
+
         <Modal visible={showPermissionHelp} animationType="slide" transparent>
           <View style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
               <Text style={styles.subtitle}>Grant USB Permission</Text>
-              <Text style={styles.help}>1. Connect Trezor Safe 3 via USB-OTG.</Text>
+              <Text style={styles.help}>1. Connect Trezor via USB-OTG.</Text>
               <Text style={styles.help}>2. Unlock device and keep it on home screen.</Text>
               <Text style={styles.help}>3. When Android prompts for USB access, tap Allow (optionally Always).</Text>
               <Text style={styles.help}>4. If no prompt, unplug/replug or enable OTG in settings.</Text>
               <View style={styles.btnrow}>
                 <Button title="Close" onPress={() => setShowPermissionHelp(false)} />
-                <Button title="Try Again (Slow)" onPress={() => { setShowPermissionHelp(false); start({ slow: true }); }} />
+                <Button title="Try Again" onPress={() => { setShowPermissionHelp(false); start(); }} />
               </View>
             </View>
           </View>
         </Modal>
-        
-        <Modal visible={passphraseVisible} animationType="fade" transparent>
-          <View style={styles.modalBackdrop}>
-            <View style={styles.modalCard}>
-              <Text style={styles.subtitle}>Enter Trezor Passphrase</Text>
-              <Text style={styles.help}>Your Trezor device is requesting a passphrase. Enter it below to continue.</Text>
-              <TextInput
-                value={passphraseValue}
-                onChangeText={setPassphraseValue}
-                secureTextEntry
-                placeholder="Enter passphrase"
-                autoFocus
-                style={styles.textInput}
-              />
-              <View style={styles.btnrow}>
-                <Button title="Cancel" onPress={() => { 
-                  setPassphraseVisible(false); 
-                  passphraseResolve?.(null); 
-                  setPassphraseResolve(null); 
-                }} />
-                <Button title="Submit" onPress={() => { 
-                  setPassphraseVisible(false); 
-                  passphraseResolve?.(passphraseValue); 
-                  setPassphraseResolve(null); 
-                }} />
-              </View>
-            </View>
-          </View>
-        </Modal>
+
+        {/* Hidden WebView bridge for Trezor Connect (WebUSB). Rendered always to ease testing. */}
+        <WebView
+          ref={webviewRef}
+          onLoadEnd={() => { setWebviewReady(true); log('WebView ready'); }}
+          onMessage={onWebViewMessage}
+          originWhitelist={['*']}
+          javaScriptEnabled
+          domStorageEnabled
+          automaticallyAdjustContentInsets={false}
+          source={{ html: trezorBridgeHtmlContent }}
+          style={{ width: 1, height: 1, opacity: 0 }}
+        />
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -286,18 +221,88 @@ const styles = StyleSheet.create({
   error: { color: '#b00020' },
   btnrow: { flexDirection: 'row', gap: 8 },
   mono: { fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }), fontSize: 12 },
-  value: { fontSize: 24, fontWeight: '700' },
   logs: { flex: 1, borderTopWidth: StyleSheet.hairlineWidth, borderColor: '#ddd', paddingTop: 8 },
   logScroll: { flex: 1 },
   logContent: { paddingBottom: 16 },
   logLine: { fontSize: 12, color: '#333', fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }) },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
   modalCard: { backgroundColor: 'white', padding: 16, borderRadius: 8, width: '92%', gap: 8 },
-  textInput: { 
-    borderWidth: 1, 
-    borderColor: '#ccc', 
-    padding: 12, 
-    borderRadius: 6,
-    fontSize: 16,
-  },
 });
+
+// Minimal HTML payload that loads Trezor Connect from CDN and bridges postMessage
+const trezorBridgeHtmlContent = `<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>Trezor Bridge</title>
+    <script src=\"https://connect.trezor.io/9/trezor-connect.js\"></script>
+    <script>
+      (function() {
+        function log(msg) { try { console.log('[WV]', msg); } catch (e) {} }
+
+        async function init() {
+          try {
+            await TrezorConnect.init({
+              connectSrc: 'https://connect.trezor.io/9/',
+              manifest: { email: 'support@nullwallet.app', appUrl: 'https://nullwallet.app' },
+              lazyLoad: true,
+              transportReconnect: true,
+            });
+            log('TrezorConnect initialized');
+          } catch (e) {
+            log('Init error: ' + (e && e.message ? e.message : e));
+          }
+        }
+
+        function postMessageToRN(obj) {
+          try { window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch (e) {}
+        }
+
+        function handleMessage(raw) {
+          var data; try { data = JSON.parse(raw && raw.data ? raw.data : raw); } catch (e) { return; }
+          var id = data && data.id; var action = data && data.action; var payload = data && data.payload;
+          if (typeof id !== 'number' || !action) return;
+          (async function(){
+            try {
+              var result;
+              switch(action) {
+                case 'eth_getAddress':
+                  result = await TrezorConnect.ethereumGetAddress({
+                    path: (payload && payload.path) || "m/44'\/60'\/0'\/0\/0",
+                    showOnTrezor: !!(payload && payload.showOnTrezor)
+                  });
+                  break;
+                case 'eth_signTransaction':
+                  result = await TrezorConnect.ethereumSignTransaction({
+                    path: payload && payload.path,
+                    transaction: payload && payload.transaction,
+                  });
+                  break;
+                case 'getPublicKey':
+                  result = await TrezorConnect.getPublicKey({ path: (payload && payload.path) || "m/44'\/60'\/0'" });
+                  break;
+                case 'getFeatures':
+                  result = await TrezorConnect.getFeatures();
+                  break;
+                default:
+                  throw new Error('Unsupported action: ' + action);
+              }
+              postMessageToRN({ id: id, status: 'success', result: result });
+            } catch (e) {
+              postMessageToRN({ id: id, status: 'error', error: (e && e.message) ? e.message : String(e) });
+            }
+          })();
+        }
+
+        window.addEventListener('message', handleMessage);
+        document.addEventListener('message', handleMessage);
+        init();
+      })();
+    </script>
+    <style> body { background: #fff; } </style>
+  </head>
+  <body>
+    <div id=\"app\">Trezor Bridge Ready</div>
+  </body>
+  </html>`;
