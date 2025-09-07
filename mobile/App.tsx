@@ -740,8 +740,9 @@ const trezorHandlerHtml = `<!DOCTYPE html>
     URL: <span id=\"currentUrl\">Loading...</span><br>
     Callback: <span id=\"callbackUrl\">Loading...</span>
   </div>
-  <button id=\"testBtn\" style=\"margin: 10px; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;\">Test Callback</button>
+  <button id=\"testBtn\" onclick=\"testCallback()\" style=\"margin: 10px; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;\">Test Callback (onclick)</button>
   <button onclick=\"alert('Alert test works!')\" style=\"margin: 10px; padding: 10px; background: #28a745; color: white; border: none; border-radius: 4px;\">Test Alert</button>
+  <button onclick=\"testCallbackDirect()\" style=\"margin: 10px; padding: 10px; background: #ff6b35; color: white; border: none; border-radius: 4px;\">Test Direct</button>
   <pre id=\"lg\"></pre>
   <script>
     var st = document.getElementById('st');
@@ -751,6 +752,12 @@ const trezorHandlerHtml = `<!DOCTYPE html>
     function bridgeLog(level, msg){ log('['+level.toUpperCase()+'] '+msg); }
     window.onerror = function(message, source, lineno, colno, error){ bridgeLog('error', 'onerror: '+message+' @'+source+':'+lineno+':'+colno); };
     window.addEventListener('unhandledrejection', function(e){ bridgeLog('error', 'unhandledrejection: '+(e && e.reason && (e.reason.message||e.reason) || '')); });
+    
+    // Simple test function for direct onclick
+    window.testCallbackDirect = function() {
+      alert('testCallbackDirect called!');
+      bridgeLog('info', 'testCallbackDirect function executed');
+    };
     
     function testCallback() {
       try {
@@ -794,6 +801,9 @@ const trezorHandlerHtml = `<!DOCTYPE html>
       }
     }
     
+    // Make testCallback globally available  
+    window.testCallback = testCallback;
+    
     // Set up test button event listener
     document.addEventListener('DOMContentLoaded', function() {
       bridgeLog('info', 'DOM loaded, setting up test button');
@@ -830,8 +840,13 @@ const trezorHandlerHtml = `<!DOCTYPE html>
     }, 100);
     
     // Populate debug info immediately
-    document.getElementById('currentUrl').textContent = location.href;
-    document.getElementById('callbackUrl').textContent = new URLSearchParams(location.search).get('callback') || 'NONE';
+    try {
+      document.getElementById('currentUrl').textContent = location.href;
+      document.getElementById('callbackUrl').textContent = new URLSearchParams(location.search).get('callback') || 'NONE';
+      bridgeLog('info', 'Debug info populated');
+    } catch (e) {
+      bridgeLog('error', 'Failed to populate debug info: ' + e.message);
+    }
     
     (async function(){
       try{
