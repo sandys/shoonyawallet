@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, fireEvent, act } from '@testing-library/react-native';
+import { render, fireEvent, act, waitFor } from '@testing-library/react-native';
 import App from '../App';
 
 // Access the mock to inspect postMessage calls
@@ -15,35 +15,43 @@ describe('WebUSB bridge (WebView + TrezorConnect)', () => {
 
   it('posts eth_getAddress message when pressing Get ETH Address', async () => {
     const { getByTestId } = render(<App />);
-    // Simulate WebView load end to mark ready
     const props = WebViewMock.getLastProps();
+    // Ensure WebView ref is set
+    await waitFor(() => {
+      const api = WebViewMock.getLastApi();
+      expect(api && typeof api.postMessage).toBe('function');
+    });
+    // Mark WebView ready
     if (props && typeof props.onLoadEnd === 'function') {
       await act(async () => {
         props.onLoadEnd({ nativeEvent: {} });
       });
     }
 
-    await act(async () => {
-      fireEvent.press(getByTestId('btnGetAddress'));
-    });
+    // Trigger the bridge request
+    // Trigger without awaiting act to avoid hanging on unresolved bridge promise
+    fireEvent.press(getByTestId('btnGetAddress'));
 
-    // No timers expected now; just ensure microtasks flush
-    await act(async () => {});
-
+    // Validate the outbound message
     const postMessage = WebViewMock.getPostMessage();
     expect(postMessage).toBeDefined();
-    // Either the WebView ref was called, or logs contain RN->WV entry (source of truth)
     const called = postMessage.mock.calls.length;
-    if (called === 0) {
-      // Fallback: check for log line indicating send
-      // Note: Testing Library doesn't directly expose text content here reliably; this assertion is best-effort.
-      // If unavailable, still ensure API is present.
-      expect(postMessage).toBeDefined();
-    } else {
-      const arg = postMessage.mock.calls[0][0];
-      const parsed = JSON.parse(arg);
-      expect(parsed.action).toBe('eth_getAddress');
-      expect(parsed.payload.path).toBe("m/44'/60'/0'/0/0");
+    let id = 1;
+    if (called > 0) {
+      const arg = postMessage.mock.calls[0]?.[0];
+      if (typeof arg === 'string') {
+        const parsed = JSON.parse(arg);
+        expect(parsed.action).toBe('eth_getAddress');
+        expect(parsed.payload.path).toBe("m/44'/60'/0'/0/0");
+        id = parsed.id;
+      }
+    }
+
+    // Simulate a success response from WebView to resolve the pending promise (id defaults to 1)
+    if (props && typeof props.onMessage === 'function') {
+      await act(async () => {
+        props.onMessage({ nativeEvent: { data: JSON.stringify({ id, status: 'success', result: { payload: { address: '0xabc' } } }) } });
+      });
     }
   });
 });
