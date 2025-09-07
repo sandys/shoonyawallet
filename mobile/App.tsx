@@ -170,9 +170,12 @@ export default function App() {
       
       const dir = `${DocumentDirectoryPath}/trezor_handler`;
       await mkdir(dir).catch(() => {});
+      
       // Force regenerate HTML each time with fresh timestamp
-      logInfo('Regenerating HTML file with timestamp: ' + Date.now());
+      logInfo('Regenerating HTML files with timestamp: ' + Date.now());
       await writeFile(`${dir}/${TREZOR_PAGE_NAME}`, trezorHandlerHtml, 'utf8');
+      await writeFile(`${dir}/callback.html`, callbackRedirectHtml, 'utf8');
+      
       const server = new StaticServer({ fileDir: dir, hostname: '127.0.0.1', port: 0 });
       const origin = await server.start('Start server');
       let baseUrl = origin;
@@ -779,12 +782,21 @@ const trezorHandlerHtml = `<!DOCTYPE html>
             u.searchParams.set('data', encodeURIComponent(JSON.stringify(testData)));
             var finalUrl = u.toString();
             bridgeLog('info', 'Final callback URL length: ' + finalUrl.length);
-            bridgeLog('info', 'Final callback URL start: ' + finalUrl.substring(0, 100));
-            set('Attempting redirect...', 'warn');
+            bridgeLog('info', 'Final callback URL: ' + finalUrl);
             
-            // Use location.replace immediately for swan-io browser
-            bridgeLog('info', 'Redirecting to close URL...');
-            location.replace(finalUrl);
+            // Navigate to callback page which will handle the redirect
+            try {
+              var callbackPageUrl = new URL('./callback.html', location.href);
+              callbackPageUrl.searchParams.set('status', 'success');
+              callbackPageUrl.searchParams.set('data', encodeURIComponent(JSON.stringify(testData)));
+              callbackPageUrl.searchParams.set('callback', encodeURIComponent(callback));
+              bridgeLog('info', 'Navigating to callback page: ' + callbackPageUrl.toString());
+              set('Navigating to callback page...', 'ok');
+              location.href = callbackPageUrl.toString();
+            } catch (e) {
+              bridgeLog('error', 'Callback page navigation failed: ' + e.message);
+              set('Callback page navigation failed: ' + e.message, 'err');
+            }
             
           } catch (urlError) {
             bridgeLog('error', 'URL parsing failed: ' + urlError.message);
@@ -894,17 +906,18 @@ const trezorHandlerHtml = `<!DOCTYPE html>
         function finish(status, data){ 
           try{ 
             bridgeLog('info', 'Finishing with status=' + status + ', data length=' + (typeof data==='string' ? data.length : JSON.stringify(data||{}).length));
-            var u=new URL(callback); 
-            u.searchParams.set('status',status); 
-            var ds= typeof data==='string'?data:JSON.stringify(data||{}); 
-            u.searchParams.set('data', encodeURIComponent(ds)); 
-            var finalUrl = u.toString();
-            bridgeLog('info', 'Redirecting to close URL: ' + finalUrl.substring(0, 100) + '...');
-            set('Closing browser...', 'ok');
-            location.replace(finalUrl); 
+            // Navigate to callback page which will handle the redirect
+            var callbackPageUrl = new URL('./callback.html', location.href);
+            callbackPageUrl.searchParams.set('status', status);
+            var ds = typeof data==='string' ? data : JSON.stringify(data||{});
+            callbackPageUrl.searchParams.set('data', encodeURIComponent(ds));
+            callbackPageUrl.searchParams.set('callback', encodeURIComponent(callback));
+            bridgeLog('info', 'Navigating to callback page: ' + callbackPageUrl.toString());
+            set('Redirecting to callback page...', 'ok');
+            location.href = callbackPageUrl.toString();
           }catch(e){ 
-            bridgeLog('error','callback build failed: '+e);
-            set('Callback failed: ' + e.message, 'err');
+            bridgeLog('error','callback navigation failed: '+e);
+            set('Callback navigation failed: ' + e.message, 'err');
           } 
         }
         if (!action) return;
@@ -951,6 +964,109 @@ const trezorHandlerHtml = `<!DOCTYPE html>
           if (result && result.success) finish('success', result); else finish('error', (result && result.payload && result.payload.error)||'Unknown');
         }catch(e){ bridgeLog('error','call failed: '+e); finish('error', e && e.message ? e.message : String(e)); }
       }catch(e){ bridgeLog('error','handler crash: '+e); }
+    })();
+  </script>
+</body>
+</html>`;
+
+// Callback redirect HTML page - performs immediate HTTP-like redirect to custom scheme URL
+const callbackRedirectHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sifar Callback Redirect</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 20px; text-align: center; }
+    .spinner { border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 0 auto; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .status { margin: 20px 0; }
+  </style>
+</head>
+<body>
+  <h2>sifar – Callback Handler</h2>
+  <div class="spinner"></div>
+  <div class="status" id="status">Redirecting...</div>
+  <div id="debug" style="background: #f0f0f0; padding: 10px; margin: 10px 0; border: 1px solid #ccc; font-size: 12px; text-align: left;"></div>
+
+  <script>
+    (function() {
+      var statusEl = document.getElementById('status');
+      var debugEl = document.getElementById('debug');
+      
+      function log(msg) {
+        console.log(msg);
+        debugEl.innerHTML += new Date().toISOString() + ': ' + msg + '<br>';
+      }
+      
+      function setStatus(msg) {
+        statusEl.textContent = msg;
+        log('Status: ' + msg);
+      }
+      
+      try {
+        log('Callback redirect page loaded');
+        log('URL: ' + location.href);
+        
+        var params = new URLSearchParams(location.search);
+        var status = params.get('status') || 'error';
+        var data = params.get('data') || '';
+        var callback = params.get('callback') || '';
+        
+        log('Parsed params - Status: ' + status + ', Data length: ' + data.length + ', Callback: ' + (callback ? callback.substring(0, 30) + '...' : 'NONE'));
+        
+        if (!callback) {
+          setStatus('Error: No callback URL provided');
+          log('ERROR: Missing callback URL');
+          return;
+        }
+        
+        // Build the final redirect URL
+        try {
+          var redirectUrl = new URL(callback);
+          redirectUrl.searchParams.set('status', status);
+          redirectUrl.searchParams.set('data', data);
+          var finalUrl = redirectUrl.toString();
+          
+          log('Built redirect URL: ' + finalUrl.substring(0, 100) + '...');
+          setStatus('Redirecting to app...');
+          
+          // Use meta refresh for automatic redirect (simulates HTTP 302)
+          var metaRefresh = document.createElement('meta');
+          metaRefresh.httpEquiv = 'refresh';
+          metaRefresh.content = '0; url=' + finalUrl;
+          document.head.appendChild(metaRefresh);
+          log('Added meta refresh for redirect');
+          
+          // Also try direct location change as backup
+          setTimeout(function() {
+            try {
+              log('Attempting direct location redirect...');
+              window.location.href = finalUrl;
+            } catch (e) {
+              log('Direct location redirect failed: ' + e.message);
+            }
+          }, 100);
+          
+          // Another backup using location.replace
+          setTimeout(function() {
+            try {
+              log('Attempting location.replace redirect...');
+              window.location.replace(finalUrl);
+            } catch (e) {
+              log('Location.replace redirect failed: ' + e.message);
+            }
+          }, 500);
+          
+        } catch (e) {
+          setStatus('Error building redirect URL');
+          log('ERROR: Failed to build redirect URL: ' + e.message);
+        }
+        
+      } catch (e) {
+        setStatus('Script error: ' + e.message);
+        log('SCRIPT ERROR: ' + e.message);
+      }
     })();
   </script>
 </body>
