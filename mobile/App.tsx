@@ -280,6 +280,12 @@ export default function App() {
             throw new Error('Partial Custom Tabs not supported on this device. Please update Chrome or your Android system.');
           } else {
             logInfo('Using partial CCT (embedded)');
+            // Add timeout in case CCT opens full-screen instead of partial
+            setTimeout(() => {
+              if (cctPending.current) {
+                logWarn('CCT taking too long - it may have opened full-screen. Try closing the browser manually.');
+              }
+            }, 3000);
           }
         } catch (e) {
           cctPending.current = null; reject(e);
