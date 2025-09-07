@@ -154,77 +154,19 @@ jest.mock('react-native-webview', () => {
   };
 });
 
-// Mock local static server and FS to avoid native deps in Jest
-try {
-  require.resolve('react-native-static-server');
-  jest.mock('react-native-static-server', () => {
-    return {
-      __esModule: true,
-      default: class StaticServer {
-        constructor(port, root, options) { this._url = 'http://127.0.0.1:12345'; }
-        start = jest.fn(async () => this._url);
-        stop = jest.fn(async () => undefined);
-      }
-    };
-  });
-} catch (_) {
-  jest.mock('react-native-static-server', () => ({
-    __esModule: true,
-    default: class StaticServer {
-      constructor(port, root, options) { this._url = 'http://127.0.0.1:12345'; }
-      start = jest.fn(async () => this._url);
-      stop = jest.fn(async () => undefined);
-    }
-  }), { virtual: true });
-}
+// Mock react-native-web-server and inappbrowser for tests
+jest.mock('react-native-http-bridge', () => ({
+  __esModule: true,
+  start: jest.fn(),
+  stop: jest.fn(),
+  respond: jest.fn(),
+}));
 
-try {
-  require.resolve('react-native-fs');
-  jest.mock('react-native-fs', () => {
-    const files = new Map();
-    const path = '/mock/Documents';
-    return {
-      __esModule: true,
-      default: {
-        DocumentDirectoryPath: path,
-        mkdir: jest.fn(async () => {}),
-        writeFile: jest.fn(async (p, c) => { files.set(p, c); }),
-        exists: jest.fn(async (p) => files.has(p)),
-        unlink: jest.fn(async (p) => { files.delete(p); }),
-      },
-    };
-  });
-} catch (_) {
-  // If the module is not installed in test, provide a virtual mock
-  jest.mock('react-native-inappbrowser-reborn', () => ({
-    __esModule: true,
-    default: {
-      isAvailable: jest.fn(async () => true),
-      open: jest.fn(async () => ({ type: 'opened' })),
-      close: jest.fn(() => {}),
-    },
-  }), { virtual: true });
-}
-
-try {
-  require.resolve('react-native-inappbrowser-reborn');
-  jest.mock('react-native-inappbrowser-reborn', () => ({
-    __esModule: true,
-    default: {
-      isAvailable: jest.fn(async () => true),
-      open: jest.fn(async () => ({ type: 'opened' })),
-      close: jest.fn(() => {}),
-    },
-  }));
-} catch (_) {
-  jest.mock('react-native-fs', () => ({
-    __esModule: true,
-    default: {
-      DocumentDirectoryPath: '/mock/Documents',
-      mkdir: jest.fn(async () => {}),
-      writeFile: jest.fn(async () => {}),
-      exists: jest.fn(async () => true),
-      unlink: jest.fn(async () => {}),
-    },
-  }), { virtual: true });
-}
+jest.mock('react-native-inappbrowser-reborn', () => ({
+  __esModule: true,
+  default: {
+    isAvailable: jest.fn(async () => true),
+    open: jest.fn(async () => ({ type: 'opened' })),
+    close: jest.fn(() => {}),
+  },
+}));

@@ -5,8 +5,8 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import type { WebViewMessageEvent } from 'react-native-webview';
 import { WebView } from 'react-native-webview';
 import InAppBrowser from 'react-native-inappbrowser-reborn';
-import RNFS from 'react-native-fs';
-import StaticServer from 'react-native-static-server';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const httpBridge = require('react-native-http-bridge');
 import { Linking } from 'react-native';
 
 type Phase = 'idle' | 'connecting' | 'ready' | 'error';
@@ -34,7 +34,7 @@ export default function App() {
   const pending = useRef(new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>());
   const cctPending = useRef<{ action: string; resolve: (v: any)=>void; reject: (e:any)=>void } | null>(null);
 
-  const serverRef = useRef<{ server: StaticServer | null; baseUrl: string | null; ready: boolean }>({ server: null, baseUrl: null, ready: false });
+  const serverRef = useRef<{ port: number; baseUrl: string | null; ready: boolean }>({ port: 0, baseUrl: null, ready: false });
 
   const MAX_LOGS = 2000;
   const log = useCallback((msg: string) => {
@@ -155,18 +155,26 @@ export default function App() {
   const CALLBACK_URL = 'sifar://trezor-callback';
 
   const ensureLocalServer = useCallback(async (): Promise<string> => {
-    if (serverRef.current.ready && serverRef.current.baseUrl) return serverRef.current.baseUrl;
+    if (serverRef.current.ready && serverRef.current.baseUrl) return serverRef.current.baseUrl as string;
     try {
-      const root = `${RNFS.DocumentDirectoryPath}/trezor_handler`;
-      await RNFS.mkdir(root).catch(() => {});
-      const filePath = `${root}/${TREZOR_PAGE_NAME}`;
-      await RNFS.writeFile(filePath, trezorHandlerHtml, 'utf8');
-      const server = new StaticServer(0, root, { localOnly: true });
-      const rawUrl = await server.start();
-      let baseUrl = rawUrl;
-      try { const u = new URL(rawUrl); baseUrl = `http://localhost:${u.port}`; } catch (_) {}
-      serverRef.current = { server, baseUrl, ready: true };
-      logInfo(`Local server started at ${baseUrl} (raw=${rawUrl})`);
+      const port = 18123; // fixed port for localhost
+      httpBridge.start(port, 'sifar', (req: any) => {
+        try {
+          const requestId = req.requestId || '';
+          const url: string = req.url || '/';
+          const method: string = (req.type || 'GET').toUpperCase();
+          if (method === 'GET' && url === `/${TREZOR_PAGE_NAME}`) {
+            httpBridge.respond(requestId, 200, 'text/html; charset=utf-8', trezorHandlerHtml);
+          } else {
+            httpBridge.respond(requestId, 404, 'text/plain; charset=utf-8', 'Not Found');
+          }
+        } catch (e) {
+          // ignore
+        }
+      });
+      const baseUrl = `http://localhost:${port}`;
+      serverRef.current = { port, baseUrl, ready: true };
+      logInfo(`Local server started at ${baseUrl}`);
       return baseUrl;
     } catch (e: any) {
       const msg = e?.message ?? String(e);

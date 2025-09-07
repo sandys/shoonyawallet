@@ -11,15 +11,13 @@
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
-    "gen:trezor-descriptor": "pbjs -t json -o src/services/hardware/trezor/protos/descriptor.json src/services/hardware/trezor/protos/options.proto src/services/hardware/trezor/protos/messages-common.proto src/services/hardware/trezor/protos/messages-management.proto src/services/hardware/trezor/protos/messages.proto src/services/hardware/trezor/protos/messages-solana.proto",
-    "postinstall": "patch-package"
+    "gen:trezor-descriptor": "pbjs -t json -o src/services/hardware/trezor/protos/descriptor.json src/services/hardware/trezor/protos/options.proto src/services/hardware/trezor/protos/messages-common.proto src/services/hardware/trezor/protos/messages-management.proto src/services/hardware/trezor/protos/messages.proto src/services/hardware/trezor/protos/messages-solana.proto"
   },
   "dependencies": {
     "react": "19.1.0",
     "react-native": "0.81.1",
     "react-native-webview": "^13.10.2",
-    "react-native-static-server": "^0.5.0",
-    "react-native-fs": "^2.20.0",
+    "react-native-http-bridge": "^0.6.1",
     "react-native-inappbrowser-reborn": "^3.7.0",
     "@react-native/new-app-screen": "0.81.1",
     "react-native-safe-area-context": "^5.5.2",
@@ -53,8 +51,7 @@
     "@testing-library/react-native": "^12.5.2",
     "@testing-library/jest-native": "^5.0.0",
     "jest-environment-jsdom": "^29.7.0",
-    "protobufjs-cli": "^1.1.1",
-    "patch-package": "^8.0.0"
+    "protobufjs-cli": "^1.1.1"
   },
   "engines": {
     "node": ">=20"
