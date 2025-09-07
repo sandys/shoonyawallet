@@ -7,9 +7,6 @@ import App from '../App';
 const WebViewMock = require('react-native-webview').__mock;
 
 describe('WebUSB bridge (WebView + TrezorConnect)', () => {
-  beforeAll(() => {
-    jest.useFakeTimers();
-  });
   beforeEach(() => {
     // reset mock call history
     const pm = WebViewMock.getPostMessage();
