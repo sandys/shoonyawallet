@@ -179,3 +179,9 @@ jest.mock('react-native-inappbrowser-reborn', () => ({
     close: jest.fn(() => {}),
   },
 }));
+
+// Mock partial custom tab module
+jest.mock('./src/native/ChromeTabs', () => ({
+  __esModule: true,
+  openPartialCustomTab: jest.fn(async () => true),
+}));

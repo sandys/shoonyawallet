@@ -8,6 +8,7 @@ import InAppBrowser from 'react-native-inappbrowser-reborn';
 import StaticServer from '@dr.pogodin/react-native-static-server';
 import { DocumentDirectoryPath, mkdir, writeFile } from '@dr.pogodin/react-native-fs';
 import { Linking } from 'react-native';
+import { openPartialCustomTab } from './src/native/ChromeTabs';
 
 type Phase = 'idle' | 'connecting' | 'ready' | 'error';
 
@@ -228,18 +229,23 @@ export default function App() {
     return new Promise<any>(async (resolve, reject) => {
       cctPending.current = { action, resolve, reject };
       try {
-        const available = await InAppBrowser.isAvailable();
-        if (available) {
-          await InAppBrowser.open(url, {
-            showTitle: true,
-            enableUrlBarHiding: false,
-            enableDefaultShare: false,
-            forceCloseOnRedirection: false,
-            toolbarColor: '#111827',
-            secondaryToolbarColor: '#1f2937',
-          });
-        } else {
-          await Linking.openURL(url);
+        // Prefer embedded partial-height Custom Tab if available
+        const launched = await openPartialCustomTab(url, 0.5);
+        if (!launched) {
+          const available = await InAppBrowser.isAvailable();
+          if (available) {
+            await InAppBrowser.open(url, {
+              showTitle: false,
+              enableUrlBarHiding: true,
+              enableDefaultShare: false,
+              forceCloseOnRedirection: false,
+              toolbarColor: '#111827',
+              secondaryToolbarColor: '#1f2937',
+              animations: { start: 'slide_in_up', end: 'slide_out_down' } as any,
+            });
+          } else {
+            await Linking.openURL(url);
+          }
         }
       } catch (e: any) {
         const msg = e?.message ?? String(e);
