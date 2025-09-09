@@ -1,0 +1,29 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="expo.modules.reactnativeusb">
+  
+  <uses-permission android:name="android.permission.USB_PERMISSION" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  
+  <application>
+    <receiver android:name=".UsbDeviceAttachedReceiver"
+              android:exported="false">
+      <intent-filter>
+        <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+      </intent-filter>
+    </receiver>
+    
+    <receiver android:name=".UsbDeviceDetachedReceiver"
+              android:exported="false">
+      <intent-filter>
+        <action android:name="android.hardware.usb.action.USB_DEVICE_DETACHED" />
+      </intent-filter>
+    </receiver>
+    
+    <receiver android:name=".UsbPermissionReceiver"
+              android:exported="false">
+      <intent-filter>
+        <action android:name="expo.modules.reactnativeusb.USB_PERMISSION" />
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>

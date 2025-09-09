@@ -1,0 +1,13 @@
+{
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": [
+      "ReactNativeUsbModule"
+    ]
+  },
+  "android": {
+    "modules": [
+      "expo.modules.reactnativeusb.ReactNativeUsbModule"
+    ]
+  }
+}
